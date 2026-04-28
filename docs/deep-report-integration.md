@@ -31,7 +31,7 @@ The new report reframes the app as a teaching material operating system rather t
 | Real vector RAG | Current retrieval is local lexical + cosine vector approximation, not embedding search |
 | OCR and layout extraction | Scanned PDFs and complex tables need OCR/layout models |
 | RBAC roles | Teacher, TA, student, admin permissions are front-end simulated only |
-| Personal cloud sync | Google Drive backup is manual JSON backup/restore, not automatic conflict-aware sync |
+| Personal cloud sync | Google Drive backup supports manual restore and optional auto-backup, but not conflict-aware sync |
 | LMS integration | No Canvas / Google Classroom / LTI workflow yet |
 | Speech path | No STT/TTS or realtime voice assistant yet |
 | Evaluation suite | Basic QA metrics exist, but no teacher gold set, red-team set, or latency tracking |

@@ -826,6 +826,27 @@ legend {
   gap: 8px;
 }
 
+.drive-toggle {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+}
+
+.drive-toggle input {
+  accent-color: var(--teal);
+  height: 18px;
+  width: 18px;
+}
+
+.drive-toggle span {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .drive-status {
   margin-top: 12px;
   border: 1px solid var(--line);
@@ -846,6 +867,37 @@ legend {
   color: #a33b20;
   border-color: rgba(163, 59, 32, 0.28);
   background: #fff6f1;
+}
+
+.drive-sync-meta {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.drive-sync-meta div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  min-width: 0;
+  padding: 10px;
+}
+
+.drive-sync-meta span,
+.drive-sync-meta strong {
+  display: block;
+}
+
+.drive-sync-meta span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin-bottom: 4px;
+}
+
+.drive-sync-meta strong {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .drive-backup-list {
@@ -1017,6 +1069,7 @@ legend {
   .metric-grid,
   .governance-grid,
   .drive-backup-item,
+  .drive-sync-meta,
   .quick-prompts,
   .export-grid,
   .nav-list {

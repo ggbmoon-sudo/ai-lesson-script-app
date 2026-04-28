@@ -447,6 +447,10 @@
                     OAuth Client ID
                     <input id="driveClientIdInput" type="text" placeholder="1234567890-xxxx.apps.googleusercontent.com" autocomplete="off" />
                   </label>
+                  <label class="drive-toggle">
+                    <input id="autoDriveBackupInput" type="checkbox" />
+                    <span>儲存 / 發布後自動備份</span>
+                  </label>
                   <div class="cloud-actions">
                     <button class="action-button ghost" id="connectDriveBtn" type="button">連接 Drive</button>
                     <button class="action-button" id="backupDriveBtn" type="button">備份到 Drive</button>
@@ -455,6 +459,7 @@
                   </div>
                 </div>
                 <div class="drive-status" id="driveStatus">未連接 Google Drive</div>
+                <div class="drive-sync-meta" id="driveSyncMeta"></div>
                 <div class="drive-backup-list" id="driveBackupList"></div>
               </div>
               <div class="compare-box" id="compareBox"></div>

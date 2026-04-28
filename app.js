@@ -7,6 +7,7 @@ const GOOGLE_IDENTITY_SCRIPT = "https://accounts.google.com/gsi/client";
 let driveAccessToken = "";
 let driveTokenClient = null;
 let googleIdentityScriptPromise = null;
+let driveAutoBackupTimer = null;
 
 const bloomMap = {
   remember: {
@@ -89,6 +90,10 @@ const state = {
     busy: false,
     status: "未連接 Google Drive",
     lastBackup: null,
+    lastBackupAt: null,
+    lastLocalChange: null,
+    pendingReason: "",
+    autoBackup: false,
     backups: [],
   },
   role: "teacher",
@@ -165,7 +170,9 @@ function bindDom() {
   dom.auditLog = document.getElementById("auditLog");
   dom.governanceMetrics = document.getElementById("governanceMetrics");
   dom.driveClientId = document.getElementById("driveClientIdInput");
+  dom.autoDriveBackup = document.getElementById("autoDriveBackupInput");
   dom.driveStatus = document.getElementById("driveStatus");
+  dom.driveSyncMeta = document.getElementById("driveSyncMeta");
   dom.driveBackupList = document.getElementById("driveBackupList");
   dom.compareBox = document.getElementById("compareBox");
   dom.aiStatus = document.getElementById("aiStatus");
@@ -197,12 +204,20 @@ function bindEvents() {
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
   document.getElementById("connectDriveBtn").addEventListener("click", connectGoogleDrive);
-  document.getElementById("backupDriveBtn").addEventListener("click", backupToGoogleDrive);
+  document.getElementById("backupDriveBtn").addEventListener("click", () => backupToGoogleDrive());
   document.getElementById("listDriveBackupsBtn").addEventListener("click", () => listGoogleDriveBackups(true));
   document.getElementById("restoreLatestDriveBtn").addEventListener("click", restoreLatestGoogleDriveBackup);
   dom.driveClientId.addEventListener("change", () => {
     state.drive.clientId = clean(dom.driveClientId.value);
     persistDriveSettings();
+    renderDrivePanel();
+  });
+  dom.autoDriveBackup.addEventListener("change", () => {
+    state.drive.autoBackup = dom.autoDriveBackup.checked;
+    persistDriveSettings();
+    if (state.drive.autoBackup && state.drive.pendingReason && driveAccessToken) {
+      scheduleDriveAutoBackup(state.drive.pendingReason);
+    }
     renderDrivePanel();
   });
   dom.roleSelect.addEventListener("change", () => setRole(dom.roleSelect.value));
@@ -401,6 +416,7 @@ async function generateLesson() {
   dom.assistantContext.value = buildAssistantContext();
   renderQuestions();
   renderAll();
+  markDriveBackupNeeded("教材生成");
   persistState();
 }
 
@@ -612,6 +628,7 @@ function regenerateSelectedSlide() {
   dom.slideFeedback.value = "";
   dom.assistantContext.value = buildAssistantContext();
   renderSlides();
+  markDriveBackupNeeded("局部修改");
   persistState();
 }
 
@@ -635,6 +652,7 @@ async function handleMaterialUpload(event) {
         `已解析 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段${state.materialMeta.warning ? `。${state.materialMeta.warning}` : ""}`,
         true,
       );
+      markDriveBackupNeeded("教材解析");
       persistState();
       return;
     }
@@ -649,6 +667,7 @@ async function handleMaterialUpload(event) {
     dom.materialText.value = text;
     logAudit("教材解析", `${file.name} 讀入為 ${state.materialPages.length || 1} 個文字片段`);
     setMaterialStatus(`已讀入 ${file.name}：${state.materialPages.length || 1} 個文字片段`, true);
+    markDriveBackupNeeded("教材解析");
     persistState();
     return;
   }
@@ -688,6 +707,7 @@ async function generateScript() {
       logAudit("講稿生成", `OpenAI 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
       renderScript();
       renderTimeBudget();
+      markDriveBackupNeeded("講稿生成");
       persistState();
       return;
     }
@@ -720,6 +740,7 @@ async function generateScript() {
   logAudit("講稿生成", `本機規則依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
   renderScript();
   renderTimeBudget();
+  markDriveBackupNeeded("講稿生成");
   persistState();
 }
 
@@ -735,6 +756,7 @@ function reviseScript(mode) {
     state.script = `${state.script}\n\n【補充層次】\n如果學生反應良好，可以加入一個延伸問題：請比較本課概念在理想條件與真實環境中的差異，並說明哪一個限制最容易影響結論。`;
   }
   renderScript();
+  markDriveBackupNeeded("講稿修訂");
   persistState();
 }
 
@@ -1059,6 +1081,7 @@ function saveVersion() {
   logAudit("版本保存", `${version.name} 已保存`);
   renderVersions();
   renderStatus();
+  markDriveBackupNeeded("版本保存");
   persistState();
 }
 
@@ -1080,6 +1103,7 @@ function publishLesson() {
   revision.citationIndex = buildCitationIndex(revision);
   state.publishedRevision = revision;
   renderPublishedQa();
+  markDriveBackupNeeded("教材發布");
   persistState();
 }
 
@@ -1377,11 +1401,12 @@ async function connectGoogleDrive() {
   }
 }
 
-async function backupToGoogleDrive() {
+async function backupToGoogleDrive(options = {}) {
   try {
-    await ensureDriveAccess();
-    setDriveBusy(true, "正在備份到 Google Drive...");
-    const payload = buildProjectPayload("google-drive");
+    await ensureDriveAccess({ interactive: !options.automatic });
+    setDriveBusy(true, options.automatic ? "正在自動備份到 Google Drive..." : "正在備份到 Google Drive...");
+    const reason = options.reason || state.drive.pendingReason || "手動備份";
+    const payload = buildProjectPayload(options.automatic ? "google-drive-auto" : "google-drive");
     const metadata = {
       name: buildDriveBackupFilename(payload),
       mimeType: "application/json",
@@ -1393,13 +1418,15 @@ async function backupToGoogleDrive() {
     };
     const file = await uploadDriveJson(metadata, payload);
     state.drive.lastBackup = file;
+    state.drive.lastBackupAt = new Date().toISOString();
+    state.drive.pendingReason = "";
     setDriveStatus(`已備份到 Google Drive：${file.name}`, true);
-    logAudit("雲端備份", `已備份到 Google Drive：${file.name}`);
+    logAudit("雲端備份", `${options.automatic ? "自動" : "手動"}備份完成：${file.name}（${reason}）`);
     persistDriveSettings();
     await listGoogleDriveBackups(false);
     setDriveStatus(`已備份到 Google Drive：${file.name}`, true);
   } catch (error) {
-    setDriveStatus(`備份失敗：${error.message}`, false);
+    setDriveStatus(`${options.automatic ? "自動" : ""}備份失敗：${error.message}`, state.drive.connected);
   } finally {
     setDriveBusy(false);
   }
@@ -1467,9 +1494,11 @@ async function restoreGoogleDriveBackup(fileId, filename = "Google Drive 備份"
   }
 }
 
-async function ensureDriveAccess() {
+async function ensureDriveAccess(options = {}) {
+  const interactive = options.interactive !== false;
   const clientId = clean(dom.driveClientId.value || state.drive.clientId);
   if (!clientId) throw new Error("請先填入 Google OAuth Client ID。");
+  if (!driveAccessToken && !interactive) throw new Error("請先按「連接 Drive」取得授權。");
   if (!driveAccessToken) await connectGoogleDrive();
   if (!driveAccessToken) throw new Error("尚未取得 Google Drive 授權。");
 }
@@ -1560,9 +1589,11 @@ function buildDriveBackupFilename(payload) {
 function renderDrivePanel() {
   if (!dom.driveStatus) return;
   dom.driveClientId.value = state.drive.clientId || "";
+  dom.autoDriveBackup.checked = Boolean(state.drive.autoBackup);
   dom.driveStatus.textContent = state.drive.status || "未連接 Google Drive";
   dom.driveStatus.classList.toggle("strong", Boolean(state.drive.connected));
   dom.driveStatus.classList.toggle("error", !state.drive.connected && state.drive.status !== "未連接 Google Drive");
+  dom.driveSyncMeta.innerHTML = buildDriveSyncMeta();
 
   if (!state.drive.backups.length) {
     dom.driveBackupList.innerHTML = emptyText("尚未列出雲端備份");
@@ -1591,6 +1622,41 @@ function renderDrivePanel() {
   });
 }
 
+function buildDriveSyncMeta() {
+  const status = state.drive.pendingReason
+    ? `待備份：${state.drive.pendingReason}`
+    : state.drive.lastBackupAt
+      ? "已同步"
+      : "尚未備份";
+  return [
+    ["備份狀態", status],
+    ["最近本機更新", state.drive.lastLocalChange ? new Date(state.drive.lastLocalChange).toLocaleString("zh-Hant") : "未記錄"],
+    ["最近雲端備份", state.drive.lastBackupAt ? new Date(state.drive.lastBackupAt).toLocaleString("zh-Hant") : "未備份"],
+  ]
+    .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+}
+
+function markDriveBackupNeeded(reason) {
+  state.drive.pendingReason = reason;
+  state.drive.lastLocalChange = new Date().toISOString();
+  if (state.drive.autoBackup && driveAccessToken && !state.drive.busy) {
+    scheduleDriveAutoBackup(reason);
+  } else if (state.drive.connected || state.drive.clientId) {
+    setDriveStatus(`有未備份更新：${reason}`, state.drive.connected);
+  }
+  persistDriveSettings();
+  renderDrivePanel();
+}
+
+function scheduleDriveAutoBackup(reason) {
+  clearTimeout(driveAutoBackupTimer);
+  setDriveStatus(`已排程自動備份：${reason}`, true);
+  driveAutoBackupTimer = setTimeout(() => {
+    backupToGoogleDrive({ automatic: true, reason });
+  }, 1500);
+}
+
 function setDriveBusy(busy, message = "") {
   state.drive.busy = busy;
   if (message) state.drive.status = message;
@@ -1610,6 +1676,10 @@ function persistDriveSettings() {
     JSON.stringify({
       clientId: state.drive.clientId,
       lastBackup: state.drive.lastBackup,
+      lastBackupAt: state.drive.lastBackupAt,
+      lastLocalChange: state.drive.lastLocalChange,
+      pendingReason: state.drive.pendingReason,
+      autoBackup: state.drive.autoBackup,
     }),
   );
 }
@@ -1621,6 +1691,10 @@ function restoreDriveSettings() {
     const payload = JSON.parse(raw);
     state.drive.clientId = payload.clientId || "";
     state.drive.lastBackup = payload.lastBackup || null;
+    state.drive.lastBackupAt = payload.lastBackupAt || null;
+    state.drive.lastLocalChange = payload.lastLocalChange || null;
+    state.drive.pendingReason = payload.pendingReason || "";
+    state.drive.autoBackup = Boolean(payload.autoBackup);
     state.drive.status = state.drive.clientId ? "可連接 Google Drive" : "未連接 Google Drive";
   } catch {
     localStorage.removeItem(DRIVE_SETTINGS_KEY);

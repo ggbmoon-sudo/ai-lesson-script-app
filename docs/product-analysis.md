@@ -95,7 +95,7 @@
 - 學生問答的檢索排序由純關鍵字提升為 lexical overlap + cosine similarity 近似。
 - 新增教師、助教、學生、管理者角色模式，前端會依角色限制可用操作。
 - 新增治理指標：citation chunk 數、QA 有據率、拒答率、需要老師介入次數。
-- 新增個人備份：本機 JSON 匯入/匯出，以及 Google Drive OAuth 備份、列表與還原流程。
+- 新增個人備份：本機 JSON 匯入/匯出，以及 Google Drive OAuth 備份、列表、還原、未備份提醒與自動備份開關。
 - 這些資料會保存在 localStorage / JSON 匯出 / Google Drive JSON 備份中，方便後續改接正式資料庫與向量服務。
 
 未在本版本實作：

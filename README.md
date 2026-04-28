@@ -19,7 +19,7 @@
 - 角色模式：支援教師、助教、學生、管理者的前端權限模擬。
 - 本機 citation index：發布時建立 chunk id、source hash、搜尋向量與 confidence。
 - 治理指標：顯示發布狀態、citation chunk 數、QA 有據率、拒答率與需老師介入次數。
-- 個人備份：支援本機 JSON 匯入/匯出，以及 Google Drive 雲端備份與還原。
+- 個人備份：支援本機 JSON 匯入/匯出、Google Drive 雲端備份與還原、未備份提醒與自動備份開關。
 - 匯出：支援 Markdown、JSON 與伺服器模式 PPTX。
 - AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
@@ -106,6 +106,8 @@ GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 5. 在「版本匯出」頁貼上 OAuth Client ID，按「連接 Drive」。
 
 APP 使用 Google Identity Services 取得使用者授權，並以 Drive API `drive.file` scope 上傳 JSON 備份。這個 scope 只讓 APP 存取它自己建立或使用者授權開啟的檔案，不會讀取整個雲端硬碟。前端只需要 OAuth Client ID，請不要把 Google Client Secret 或任何 API key 貼入 APP 或提交到 GitHub。
+
+「儲存 / 發布後自動備份」開啟後，只要 Drive token 仍有效，儲存版本、發布教材、生成講稿等重要操作會自動排程備份；若 token 過期，系統會保留「待備份」狀態，重新按「連接 Drive」後即可再備份。
 
 ### 匯出 PowerPoint
 
