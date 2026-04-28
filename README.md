@@ -11,7 +11,8 @@
 - 教材解析：伺服器模式支援 TXT、MD、PPTX、DOCX、PDF 的基礎文字抽取。
 - 即時助理：基於目前課堂脈絡生成回答、互動問題、事實查核提示與 exit ticket。
 - 版本保存：使用 localStorage 儲存教材版本，支援還原與比較。
-- 匯出：支援 Markdown 與 JSON。
+- 匯出：支援 Markdown、JSON 與伺服器模式 PPTX。
+- AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
 ## 使用方式
 
@@ -55,6 +56,19 @@ http://localhost:4173
 - PDF 目前是基礎文字抽取；掃描圖像型 PDF 仍需要 OCR。
 - 解析後會保留頁碼/片段，講稿生成時會根據起始頁與課題關鍵字選取相關片段。
 
+### 匯出 PowerPoint
+
+伺服器模式可匯出 `.pptx`。匯出的簡報包含：
+
+- 每頁投影片標題
+- Gagne 教學事件
+- Bloom 層次
+- 建議分鐘
+- 教師備註摘要
+- `AI-Assisted Generation / Human review required` 標記
+
+目前 PPTX 匯出是基礎 OpenXML 產生器，適合交付與二次編輯；還未包含複雜動畫、母片設計或完整講者備註結構。
+
 ## 檔案結構
 
 ```text
@@ -74,6 +88,6 @@ http://localhost:4173
 
 - 加入真正的向量資料庫與多文件 RAG。
 - 增加 OCR，支援掃描 PDF 與圖片教材。
-- 增加 PPTX 原生匯出。
+- 增強 PPTX 匯出：主題模板、講者備註、圖片、圖表與動畫。
 - 增加 LMS 整合，例如 Canvas 或 Google Classroom。
 - 增加教師審核紀錄與 AI 生成透明度標記。

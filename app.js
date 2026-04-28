@@ -60,6 +60,7 @@ const state = {
   materialMeta: null,
   versions: [],
   messages: [],
+  auditLog: [],
   lastLessonInputs: null,
   budget: null,
   ai: {
@@ -121,6 +122,7 @@ function bindDom() {
   dom.assistantQuestion = document.getElementById("assistantQuestionInput");
   dom.chatLog = document.getElementById("chatLog");
   dom.versionList = document.getElementById("versionList");
+  dom.auditLog = document.getElementById("auditLog");
   dom.compareBox = document.getElementById("compareBox");
   dom.aiStatus = document.getElementById("aiStatus");
 }
@@ -144,6 +146,7 @@ function bindEvents() {
   document.getElementById("exportProjectJsonBtn").addEventListener("click", exportProjectJson);
   document.getElementById("exportLessonMdBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportMarkdownBtn").addEventListener("click", exportLessonMarkdown);
+  document.getElementById("exportPptxBtn").addEventListener("click", exportPptx);
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
 
@@ -261,12 +264,15 @@ async function generateLesson() {
     if (aiLesson?.slides?.length) {
       state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
+      logAudit("教材生成", `OpenAI 生成 ${state.slides.length} 頁教材草稿`);
     } else {
       generateLessonLocal(inputs);
+      logAudit("教材生成", `本機規則生成 ${state.slides.length} 頁教材草稿`);
     }
   } catch (error) {
     console.warn(error);
     generateLessonLocal(inputs);
+    logAudit("教材生成", `AI 不可用，改用本機規則生成 ${state.slides.length} 頁教材草稿`);
   } finally {
     setAiBusy(false);
   }
@@ -355,6 +361,7 @@ function renderAll() {
   renderScript();
   renderChat();
   renderVersions();
+  renderAuditLog();
   renderStatus();
   renderAiStatus();
 }
@@ -460,6 +467,7 @@ function regenerateSelectedSlide() {
 
   slide.notes = `${slide.notes}\n\n依據修改意見：「${feedback}」\n${additions.length ? additions.join("\n") : "調整方向：降低抽象詞彙，增加明確步驟與教師口語提示。"}`;
   slide.activity = feedback;
+  logAudit("局部修改", `第 ${slide.number} 頁依教師意見更新：${feedback}`);
   dom.slideFeedback.value = "";
   dom.assistantContext.value = buildAssistantContext();
   renderSlides();
@@ -481,6 +489,7 @@ async function handleMaterialUpload(event) {
         warning: parsed.warning || "",
       };
       dom.materialText.value = parsed.text;
+      logAudit("教材解析", `${state.materialMeta.filename} 解析為 ${state.materialPages.length || 1} 個片段`);
       setMaterialStatus(
         `已解析 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段${state.materialMeta.warning ? `。${state.materialMeta.warning}` : ""}`,
         true,
@@ -497,6 +506,7 @@ async function handleMaterialUpload(event) {
     state.materialPages = textToPages(text);
     state.materialMeta = { filename: file.name, type: "text", warning: "" };
     dom.materialText.value = text;
+    logAudit("教材解析", `${file.name} 讀入為 ${state.materialPages.length || 1} 個文字片段`);
     setMaterialStatus(`已讀入 ${file.name}：${state.materialPages.length || 1} 個文字片段`, true);
     persistState();
     return;
@@ -534,6 +544,7 @@ async function generateScript() {
         ? `\n\n【教師課前提醒】\n${aiScript.teachingNotes.map((note) => `- ${note}`).join("\n")}`
         : "";
       state.script = `${aiScript.script}${notes}`;
+      logAudit("講稿生成", `OpenAI 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
       renderScript();
       renderTimeBudget();
       persistState();
@@ -565,6 +576,7 @@ async function generateScript() {
     `最後我們整理三句話：第一，今天的核心概念是什麼；第二，它和上一堂課如何連接；第三，下一次你看到類似題目時要先找哪個線索。請把這三句寫在筆記最下方，作為本節 exit ticket。`,
   ].join("\n");
 
+  logAudit("講稿生成", `本機規則依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
   renderScript();
   renderTimeBudget();
   persistState();
@@ -634,12 +646,15 @@ async function sendAssistantMessage() {
         : "";
       const nextMove = aiReply.nextMove ? `\n\n下一步：${aiReply.nextMove}` : "";
       state.messages.push({ role: "assistant", text: `${aiReply.answer}${checks}${nextMove}` });
+      logAudit("即時助理", "OpenAI 生成課堂回應");
     } else {
       state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
+      logAudit("即時助理", "本機規則生成課堂回應");
     }
   } catch (error) {
     console.warn(error);
     state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
+    logAudit("即時助理", "AI 不可用，改用本機規則生成課堂回應");
   } finally {
     setAiBusy(false);
   }
@@ -679,6 +694,7 @@ function saveVersion() {
   };
   state.versions.unshift(version);
   state.versions = state.versions.slice(0, 12);
+  logAudit("版本保存", `${version.name} 已保存`);
   renderVersions();
   renderStatus();
   persistState();
@@ -714,6 +730,38 @@ function renderVersions() {
   });
 }
 
+function renderAuditLog() {
+  if (!dom.auditLog) return;
+  if (!state.auditLog.length) {
+    dom.auditLog.innerHTML = emptyText("尚未有生成紀錄");
+    return;
+  }
+
+  dom.auditLog.innerHTML = state.auditLog
+    .slice(0, 20)
+    .map(
+      (entry) => `
+        <article class="audit-item">
+          <strong>${escapeHtml(entry.action)}</strong>
+          <span>${escapeHtml(new Date(entry.at).toLocaleString("zh-Hant"))}</span>
+          <span>${escapeHtml(entry.detail)}</span>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function logAudit(action, detail) {
+  state.auditLog.unshift({
+    id: cryptoId(),
+    at: new Date().toISOString(),
+    action,
+    detail,
+  });
+  state.auditLog = state.auditLog.slice(0, 80);
+  renderAuditLog();
+}
+
 function restoreVersion(index) {
   const version = state.versions[index];
   if (!version) return;
@@ -745,19 +793,61 @@ function compareVersion(index) {
 }
 
 function exportProjectJson() {
+  logAudit("匯出", "完整專案匯出為 JSON");
   const payload = {
     exportedAt: new Date().toISOString(),
     inputs: state.lastLessonInputs || getLessonInputs(),
     slides: state.slides,
     questions: state.questions,
+    materialMeta: state.materialMeta,
+    materialPages: state.materialPages,
     script: state.script,
     versions: state.versions,
+    auditLog: state.auditLog,
   };
+  persistState();
   downloadFile("eduscript-ai-project.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
 }
 
 function exportLessonMarkdown() {
+  logAudit("匯出", "教材大綱與講稿匯出為 Markdown");
+  persistState();
   downloadFile("eduscript-ai-lesson.md", buildMarkdown(), "text/markdown;charset=utf-8");
+}
+
+async function exportPptx() {
+  if (window.location.protocol === "file:") {
+    dom.compareBox.textContent = "PPTX 匯出需要以 node server.js 啟動後使用 http://localhost:4173。";
+    return;
+  }
+
+  setAiBusy(true, "匯出 PPTX 中");
+  try {
+    const response = await fetch("/api/export-pptx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inputs: state.lastLessonInputs || getLessonInputs(),
+        slides: state.slides,
+        script: state.script,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `PPTX export failed: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    downloadBase64File(payload.filename || "eduscript-ai-lesson.pptx", payload.data, payload.mimeType);
+    logAudit("匯出", `PowerPoint 已匯出：${payload.filename || "eduscript-ai-lesson.pptx"}`);
+    dom.compareBox.textContent = "PPTX 已產生。簡報內含 AI-Assisted 標記，請教師完成最後審核。";
+    persistState();
+  } catch (error) {
+    dom.compareBox.textContent = `PPTX 匯出失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
 async function copyPrompt() {
@@ -768,6 +858,8 @@ async function copyPrompt() {
   } catch {
     dom.compareBox.textContent = prompt;
   }
+  logAudit("匯出", "AI Prompt 已複製或顯示");
+  persistState();
 }
 
 function clearProject() {
@@ -781,6 +873,7 @@ function clearProject() {
   state.materialMeta = null;
   state.versions = [];
   state.messages = [];
+  state.auditLog = [];
   state.lastLessonInputs = null;
   state.budget = null;
   generateLesson();
@@ -1087,6 +1180,10 @@ function buildMarkdown() {
 ${slide.notes}`,
     )
     .join("\n\n");
+  const audit = state.auditLog
+    .slice(0, 12)
+    .map((entry) => `- ${new Date(entry.at).toLocaleString("zh-Hant")}｜${entry.action}｜${entry.detail}`)
+    .join("\n");
 
   return `# ${inputs.topic}
 
@@ -1106,6 +1203,12 @@ ${slides}
 ## 講稿
 
 ${state.script || "尚未生成講稿"}
+
+## AI 生成透明度
+
+本內容由 AI 或本機規則協助生成，仍需教師完成最後審核。
+
+${audit || "尚未有生成紀錄"}
 `;
 }
 
@@ -1145,6 +1248,7 @@ function persistState() {
     materialMeta: state.materialMeta,
     versions: state.versions,
     messages: state.messages,
+    auditLog: state.auditLog,
     lastLessonInputs: state.lastLessonInputs,
     materialText: dom.materialText.value,
     assistantContext: dom.assistantContext.value,
@@ -1165,6 +1269,7 @@ function restoreState() {
     state.materialMeta = payload.materialMeta || null;
     state.versions = payload.versions || [];
     state.messages = payload.messages || [];
+    state.auditLog = payload.auditLog || [];
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);
     dom.materialText.value = payload.materialText || buildMaterialFromSlides();
@@ -1179,6 +1284,23 @@ function restoreState() {
 
 function downloadFile(filename, content, type) {
   const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadBase64File(filename, base64, type) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const blob = new Blob([bytes], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

@@ -103,6 +103,10 @@ const server = http.createServer(async (req, res) => {
       return handleMaterialParse(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/export-pptx") {
+      return handlePptxExport(req, res);
+    }
+
     if (req.method !== "GET") {
       return sendJson(res, 405, { error: "Method not allowed" });
     }
@@ -173,6 +177,25 @@ async function handleMaterialParse(req, res) {
   const buffer = Buffer.from(base64, "base64");
   const parsed = parseMaterialBuffer(buffer, filename, extension, mimeType);
   return sendJson(res, 200, parsed);
+}
+
+async function handlePptxExport(req, res) {
+  const body = await readJsonBody(req, 10_000_000);
+  const inputs = body.inputs || {};
+  const slides = Array.isArray(body.slides) ? body.slides : [];
+  const script = String(body.script || "");
+
+  if (!slides.length) {
+    return sendJson(res, 400, { error: "No slides to export" });
+  }
+
+  const filename = safeFilename(`${inputs.topic || "eduscript-ai-lesson"}.pptx`);
+  const deck = createPptxDeck({ inputs, slides, script });
+  return sendJson(res, 200, {
+    filename,
+    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    data: deck.toString("base64"),
+  });
 }
 
 function parseMaterialBuffer(buffer, filename, extension, mimeType) {
@@ -279,6 +302,258 @@ function parsePdfMaterial(buffer, filename) {
   };
 }
 
+function createPptxDeck({ inputs, slides, script }) {
+  const normalizedSlides = slides.map((slide, index) => ({
+    number: index + 1,
+    title: String(slide.title || `第 ${index + 1} 頁`),
+    event: String(slide.event || ""),
+    bloom: String(slide.bloom || ""),
+    minutes: String(slide.minutes || ""),
+    activity: String(slide.activity || ""),
+    notes: String(slide.notes || ""),
+  }));
+
+  const entries = new Map();
+  entries.set("[Content_Types].xml", contentTypesXml(normalizedSlides.length));
+  entries.set("_rels/.rels", rootRelsXml());
+  entries.set("docProps/core.xml", corePropsXml(inputs));
+  entries.set("docProps/app.xml", appPropsXml(normalizedSlides.length));
+  entries.set("ppt/presentation.xml", presentationXml(normalizedSlides.length));
+  entries.set("ppt/_rels/presentation.xml.rels", presentationRelsXml(normalizedSlides.length));
+  entries.set("ppt/theme/theme1.xml", themeXml());
+  entries.set("ppt/slideMasters/slideMaster1.xml", slideMasterXml());
+  entries.set("ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRelsXml());
+  entries.set("ppt/slideLayouts/slideLayout1.xml", slideLayoutXml());
+  entries.set("ppt/slideLayouts/_rels/slideLayout1.xml.rels", slideLayoutRelsXml());
+
+  normalizedSlides.forEach((slide) => {
+    entries.set(`ppt/slides/slide${slide.number}.xml`, slideXml(slide, inputs, script));
+    entries.set(`ppt/slides/_rels/slide${slide.number}.xml.rels`, slideRelsXml());
+  });
+
+  return createZip(Array.from(entries, ([name, content]) => ({
+    name,
+    data: Buffer.from(content, "utf8"),
+  })));
+}
+
+function contentTypesXml(slideCount) {
+  const slideOverrides = Array.from({ length: slideCount }, (_, index) =>
+    `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`,
+  ).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
+  <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
+  <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
+  ${slideOverrides}
+</Types>`;
+}
+
+function rootRelsXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>`;
+}
+
+function corePropsXml(inputs) {
+  const created = new Date().toISOString();
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>${xmlEscape(inputs.topic || "EduScript AI Lesson")}</dc:title>
+  <dc:subject>${xmlEscape(inputs.subject || "AI-assisted lesson")}</dc:subject>
+  <dc:creator>EduScript AI Studio</dc:creator>
+  <cp:keywords>AI-assisted, lesson plan, teaching script</cp:keywords>
+  <dcterms:created xsi:type="dcterms:W3CDTF">${created}</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">${created}</dcterms:modified>
+</cp:coreProperties>`;
+}
+
+function appPropsXml(slideCount) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>EduScript AI Studio</Application>
+  <PresentationFormat>On-screen Show (16:9)</PresentationFormat>
+  <Slides>${slideCount}</Slides>
+  <Company>EduScript AI Studio</Company>
+</Properties>`;
+}
+
+function presentationXml(slideCount) {
+  const slideIds = Array.from({ length: slideCount }, (_, index) =>
+    `<p:sldId id="${256 + index}" r:id="rId${index + 2}"/>`,
+  ).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>
+  <p:sldIdLst>${slideIds}</p:sldIdLst>
+  <p:sldSz cx="12192000" cy="6858000" type="screen16x9"/>
+  <p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`;
+}
+
+function presentationRelsXml(slideCount) {
+  const slideRels = Array.from({ length: slideCount }, (_, index) =>
+    `<Relationship Id="rId${index + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${index + 1}.xml"/>`,
+  ).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>
+  ${slideRels}
+</Relationships>`;
+}
+
+function slideXml(slide, inputs, script) {
+  const title = slide.title;
+  const meta = [slide.event, slide.bloom, slide.minutes && `${slide.minutes} 分鐘`].filter(Boolean).join(" / ");
+  const body = [
+    slide.activity && `活動：${slide.activity}`,
+    ...slide.notes.split(/\r?\n/).filter(Boolean).slice(0, 7),
+  ].filter(Boolean);
+  const footer = `AI-Assisted Generation / Human review required / ${inputs.subject || ""}`;
+  const scriptCue = firstLine(script).slice(0, 100);
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      ${groupShapeXml()}
+      ${textShapeXml(2, "title", 560000, 420000, 11080000, 720000, [title], 3200, true, "173B63")}
+      ${textShapeXml(3, "meta", 620000, 1180000, 10860000, 360000, [meta], 1500, false, "5E6F73")}
+      ${textShapeXml(4, "body", 720000, 1780000, 10600000, 3900000, body, 1700, false, "1F2A2E")}
+      ${textShapeXml(5, "script cue", 720000, 5820000, 8400000, 380000, [scriptCue ? `講稿提示：${scriptCue}` : ""], 1100, false, "667276")}
+      ${textShapeXml(6, "footer", 9200000, 6220000, 2500000, 260000, [footer], 850, false, "8A8F91")}
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sld>`;
+}
+
+function groupShapeXml() {
+  return `<p:nvGrpSpPr>
+  <p:cNvPr id="1" name=""/>
+  <p:cNvGrpSpPr/>
+  <p:nvPr/>
+</p:nvGrpSpPr>
+<p:grpSpPr>
+  <a:xfrm>
+    <a:off x="0" y="0"/>
+    <a:ext cx="0" cy="0"/>
+    <a:chOff x="0" y="0"/>
+    <a:chExt cx="0" cy="0"/>
+  </a:xfrm>
+</p:grpSpPr>`;
+}
+
+function textShapeXml(id, name, x, y, cx, cy, lines, size, bold, color) {
+  const paragraphs = lines.length ? lines : [""];
+  return `<p:sp>
+  <p:nvSpPr>
+    <p:cNvPr id="${id}" name="${xmlEscape(name)}"/>
+    <p:cNvSpPr txBox="1"/>
+    <p:nvPr/>
+  </p:nvSpPr>
+  <p:spPr>
+    <a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>
+    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+    <a:noFill/>
+  </p:spPr>
+  <p:txBody>
+    <a:bodyPr wrap="square" anchor="t"/>
+    <a:lstStyle/>
+    ${paragraphs.map((line) => paragraphXml(line, size, bold, color)).join("")}
+  </p:txBody>
+</p:sp>`;
+}
+
+function paragraphXml(line, size, bold, color) {
+  return `<a:p>
+  <a:r>
+    <a:rPr lang="zh-TW" sz="${size}"${bold ? ' b="1"' : ""}>
+      <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+    </a:rPr>
+    <a:t>${xmlEscape(line)}</a:t>
+  </a:r>
+  <a:endParaRPr lang="zh-TW" sz="${size}"/>
+</a:p>`;
+}
+
+function slideRelsXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>`;
+}
+
+function slideMasterXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree>${groupShapeXml()}</p:spTree></p:cSld>
+  <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
+  <p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst>
+  <p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles>
+</p:sldMaster>`;
+}
+
+function slideMasterRelsXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>
+</Relationships>`;
+}
+
+function slideLayoutXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">
+  <p:cSld name="Blank"><p:spTree>${groupShapeXml()}</p:spTree></p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sldLayout>`;
+}
+
+function slideLayoutRelsXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
+</Relationships>`;
+}
+
+function themeXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="EduScript">
+  <a:themeElements>
+    <a:clrScheme name="EduScript">
+      <a:dk1><a:srgbClr val="1F2A2E"/></a:dk1>
+      <a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
+      <a:dk2><a:srgbClr val="173B63"/></a:dk2>
+      <a:lt2><a:srgbClr val="F6F7F4"/></a:lt2>
+      <a:accent1><a:srgbClr val="157A6E"/></a:accent1>
+      <a:accent2><a:srgbClr val="C98217"/></a:accent2>
+      <a:accent3><a:srgbClr val="7163A8"/></a:accent3>
+      <a:accent4><a:srgbClr val="C9563A"/></a:accent4>
+      <a:accent5><a:srgbClr val="667276"/></a:accent5>
+      <a:accent6><a:srgbClr val="D7DFD9"/></a:accent6>
+      <a:hlink><a:srgbClr val="157A6E"/></a:hlink>
+      <a:folHlink><a:srgbClr val="7163A8"/></a:folHlink>
+    </a:clrScheme>
+    <a:fontScheme name="EduScript">
+      <a:majorFont><a:latin typeface="Aptos Display"/><a:ea typeface="Microsoft JhengHei"/></a:majorFont>
+      <a:minorFont><a:latin typeface="Aptos"/><a:ea typeface="Microsoft JhengHei"/></a:minorFont>
+    </a:fontScheme>
+    <a:fmtScheme name="EduScript"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme>
+  </a:themeElements>
+</a:theme>`;
+}
+
+
 async function createStructuredResponse({ schemaName, schema, input }) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -383,6 +658,89 @@ function extractOutputText(payload) {
   }
   return chunks.join("\n");
 }
+
+function createZip(entries) {
+  const centralRecords = [];
+  const fileRecords = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBuffer = Buffer.from(entry.name, "utf8");
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data), "utf8");
+    const compressed = zlib.deflateRawSync(data);
+    const crc = crc32(data);
+    const localHeader = Buffer.alloc(30);
+
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressed.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    fileRecords.push(localHeader, nameBuffer, compressed);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(compressed.length, 20);
+    centralHeader.writeUInt32LE(data.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralRecords.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + compressed.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralRecords);
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(0, 4);
+  endRecord.writeUInt16LE(0, 6);
+  endRecord.writeUInt16LE(entries.length, 8);
+  endRecord.writeUInt16LE(entries.length, 10);
+  endRecord.writeUInt32LE(centralDirectory.length, 12);
+  endRecord.writeUInt32LE(offset, 16);
+  endRecord.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...fileRecords, centralDirectory, endRecord]);
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
 
 function readZipEntries(buffer) {
   const eocdOffset = findEndOfCentralDirectory(buffer);
@@ -550,6 +908,26 @@ function normalizeWhitespace(text) {
     .replace(/\s*\n\s*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function xmlEscape(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function safeFilename(value) {
+  const cleaned = String(value || "eduscript-ai-lesson.pptx")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120)
+    .replace(/^-|-$/g, "");
+  if (!cleaned || cleaned === ".pptx") return "eduscript-ai-lesson.pptx";
+  return cleaned.toLowerCase().endsWith(".pptx") ? cleaned : `${cleaned || "eduscript-ai-lesson"}.pptx`;
 }
 
 function serveStatic(pathname, res) {

@@ -72,11 +72,18 @@
 - PDF 提供基礎文字抽取，作為非掃描 PDF 的先行支援。
 - 前端保留解析後的頁碼/片段，講稿生成時會以起始頁、課題與學習目標做簡單檢索排序。
 
+已在第四階段新增：
+
+- `/api/export-pptx` 可把目前教材草稿匯出為基礎 PowerPoint。
+- PPTX 內含投影片標題、教學事件、Bloom 層次、分鐘、備註摘要與 AI-assisted 標記。
+- 前端新增生成紀錄（audit log），記錄 AI/本機生成、教材解析、局部修改、版本保存與匯出。
+- Markdown 與 JSON 匯出會包含 AI 生成透明度或 audit log，強化 human-in-the-loop 控制。
+
 未在本版本實作：
 
 - 掃描 PDF OCR
 - RAG 向量資料庫
-- PPTX 原生輸出
+- 高階 PPTX 模板、圖片、動畫與完整講者備註
 - LMS 登入與成績回傳
 
 ## 建議技術路線

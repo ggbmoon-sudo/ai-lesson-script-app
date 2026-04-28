@@ -738,6 +738,39 @@ legend {
   line-height: 1.62;
 }
 
+.audit-box {
+  margin-top: 16px;
+}
+
+.audit-log {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.audit-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 10px 12px;
+}
+
+.audit-item strong,
+.audit-item span {
+  display: block;
+}
+
+.audit-item strong {
+  margin-bottom: 4px;
+}
+
+.audit-item span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
