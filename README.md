@@ -14,13 +14,37 @@
 
 ## 使用方式
 
+### 離線原型模式
+
 直接用瀏覽器打開：
 
 ```text
 index.html
 ```
 
-或者用任何靜態伺服器開啟本資料夾。
+這個模式不需要後端或 API key，會使用本機規則生成教材與講稿。
+
+### AI 伺服器模式
+
+需要 Node.js 18 或以上。
+
+1. 複製 `.env.example` 為 `.env`
+2. 在 `.env` 填入 `OPENAI_API_KEY`
+3. 啟動伺服器
+
+```bash
+node server.js
+```
+
+如果你的環境有 npm，也可以用 `npm start`。
+
+開啟：
+
+```text
+http://localhost:4173
+```
+
+有 API key 時，教材生成、講稿生成與即時助理會透過 `server.js` 呼叫 OpenAI Responses API。沒有 API key 時，前端會自動回到本機規則生成。
 
 ## 檔案結構
 
@@ -29,6 +53,9 @@ index.html
 ├── index.html
 ├── styles.css
 ├── app.js
+├── server.js
+├── package.json
+├── .env.example
 ├── docs/
 │   └── product-analysis.md
 └── README.md
@@ -36,7 +63,6 @@ index.html
 
 ## 下一步可擴展
 
-- 接入真正的 LLM API，將目前的本機規則生成替換成後端 AI 生成。
 - 支援 PPTX/PDF 解析與向量檢索。
 - 增加 PPTX 原生匯出。
 - 增加 LMS 整合，例如 Canvas 或 Google Classroom。

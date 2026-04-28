@@ -167,6 +167,32 @@ button {
   gap: 10px;
 }
 
+.ai-status {
+  margin-left: auto;
+  min-width: 170px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+}
+
+.ai-status span,
+.ai-status strong {
+  display: block;
+}
+
+.ai-status span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 3px;
+}
+
+.ai-status strong {
+  color: var(--teal-dark);
+  font-size: 0.92rem;
+}
+
 .action-button,
 .icon-button,
 .export-tile,
@@ -736,6 +762,10 @@ legend {
   .row-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .ai-status {
+    margin-left: 0;
   }
 
   .top-actions,

@@ -55,20 +55,29 @@ const wpmProfiles = {
 const state = {
   slides: [],
   script: "",
+  questions: [],
   versions: [],
   messages: [],
   lastLessonInputs: null,
   budget: null,
+  ai: {
+    checked: false,
+    enabled: false,
+    model: "",
+    message: "本機規則",
+    busy: false,
+  },
 };
 
 const dom = {};
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   bindDom();
   bindEvents();
   restoreState();
+  await checkAiHealth();
   if (!state.slides.length) {
-    generateLesson();
+    await generateLesson();
   }
   renderAll();
 });
@@ -110,6 +119,7 @@ function bindDom() {
   dom.chatLog = document.getElementById("chatLog");
   dom.versionList = document.getElementById("versionList");
   dom.compareBox = document.getElementById("compareBox");
+  dom.aiStatus = document.getElementById("aiStatus");
 }
 
 function bindEvents() {
@@ -117,9 +127,9 @@ function bindEvents() {
     item.addEventListener("click", () => switchView(item.dataset.view));
   });
 
-  dom.lessonForm.addEventListener("submit", (event) => {
+  dom.lessonForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    generateLesson();
+    await generateLesson();
     switchView("builder");
   });
 
@@ -167,6 +177,60 @@ function switchView(view) {
   dom.views.forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
 }
 
+async function checkAiHealth() {
+  if (window.location.protocol === "file:") {
+    state.ai = {
+      checked: true,
+      enabled: false,
+      model: "",
+      message: "本機規則",
+      busy: false,
+    };
+    renderAiStatus();
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/health");
+    const data = await response.json();
+    state.ai = {
+      checked: true,
+      enabled: Boolean(data.aiEnabled),
+      model: data.model || "",
+      message: data.aiEnabled ? "OpenAI 已連線" : "本機規則",
+      busy: false,
+    };
+  } catch {
+    state.ai = {
+      checked: true,
+      enabled: false,
+      model: "",
+      message: "本機規則",
+      busy: false,
+    };
+  }
+  renderAiStatus();
+}
+
+async function requestAi(type, payload) {
+  if (!state.ai.enabled || window.location.protocol === "file:") {
+    return null;
+  }
+
+  const response = await fetch(`/api/ai/${type}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `AI request failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 function getLessonInputs() {
   const selectedBloom = Array.from(dom.bloomChecks)
     .filter((input) => input.checked)
@@ -184,9 +248,38 @@ function getLessonInputs() {
   };
 }
 
-function generateLesson() {
+async function generateLesson() {
   const inputs = getLessonInputs();
   state.lastLessonInputs = inputs;
+  setAiBusy(true, "生成教材中");
+
+  try {
+    const aiLesson = await requestAi("lesson", { inputs });
+    if (aiLesson?.slides?.length) {
+      state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
+      state.slides = normalizeAiSlides(aiLesson.slides, inputs);
+    } else {
+      generateLessonLocal(inputs);
+    }
+  } catch (error) {
+    console.warn(error);
+    generateLessonLocal(inputs);
+  } finally {
+    setAiBusy(false);
+  }
+
+  dom.duration.value = inputs.duration;
+  dom.materialText.value = state.slides
+    .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
+    .join("\n\n");
+  dom.assistantContext.value = buildAssistantContext();
+  renderQuestions();
+  renderAll();
+  persistState();
+}
+
+function generateLessonLocal(inputs) {
+  state.questions = [];
   const minutes = distributeMinutes(inputs.duration, gagneEvents.map((item) => item.weight));
 
   state.slides = gagneEvents.map((item, index) => {
@@ -207,20 +300,32 @@ function generateLesson() {
       notes: buildSlideNotes(item.event, inputs, bloom, minutes[index]),
     };
   });
+}
 
-  dom.duration.value = inputs.duration;
-  dom.materialText.value = state.slides
-    .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
-    .join("\n\n");
-  dom.assistantContext.value = buildAssistantContext();
-  renderQuestions();
-  renderAll();
-  persistState();
+function normalizeAiSlides(slides, inputs) {
+  const fallbackMinutes = distributeMinutes(inputs.duration, slides.map(() => 1 / slides.length));
+  return slides.map((slide, index) => {
+    const bloomKey = Object.keys(bloomMap).find((key) => bloomMap[key].label === slide.bloom) || inputs.bloom[index % inputs.bloom.length] || "understand";
+    const bloom = bloomMap[bloomKey] || bloomMap.understand;
+    return {
+      id: cryptoId(),
+      number: index + 1,
+      title: clean(slide.title) || buildSlideTitle(slide.event, inputs.topic, index),
+      event: clean(slide.event) || gagneEvents[index % gagneEvents.length].event,
+      bloom: clean(slide.bloom) || bloom.label,
+      bloomKey,
+      minutes: Number(slide.minutes) || fallbackMinutes[index],
+      activity: clean(slide.activity) || buildActivity(gagneEvents[index % gagneEvents.length].event, inputs, bloom),
+      notes: clean(slide.notes) || buildSlideNotes(gagneEvents[index % gagneEvents.length].event, inputs, bloom, fallbackMinutes[index]),
+    };
+  });
 }
 
 function renderQuestions() {
   const inputs = getLessonInputs();
-  const questions = [
+  const questions = state.questions.length
+    ? state.questions
+    : [
     `這堂「${inputs.topic}」結束後，學生要交出哪一種可觀察成果？`,
     `你最擔心學生在哪個先備概念上出錯？`,
     `本課需要更偏向考試答題、實驗探究，還是生活應用？`,
@@ -248,6 +353,7 @@ function renderAll() {
   renderChat();
   renderVersions();
   renderStatus();
+  renderAiStatus();
 }
 
 function renderTimeline() {
@@ -367,7 +473,7 @@ function handleMaterialUpload(event) {
   reader.readAsText(file, "UTF-8");
 }
 
-function generateScript() {
+async function generateScript() {
   const material = clean(dom.materialText.value) || buildMaterialFromSlides();
   const inputs = state.lastLessonInputs || getLessonInputs();
   const startPage = clamp(Number(dom.startPage.value) || 1, 1, 999);
@@ -377,13 +483,41 @@ function generateScript() {
   const targetWords = Math.round(budget.core * wpm);
   const fragments = materialFragments(material, startPage);
 
+  state.budget = { ...budget, wpm, targetWords };
+  setAiBusy(true, "生成講稿中");
+
+  try {
+    const aiScript = await requestAi("script", {
+      inputs,
+      material,
+      startPage,
+      minutes,
+      budget,
+      wpm,
+      targetWords,
+    });
+    if (aiScript?.script) {
+      const notes = Array.isArray(aiScript.teachingNotes) && aiScript.teachingNotes.length
+        ? `\n\n【教師課前提醒】\n${aiScript.teachingNotes.map((note) => `- ${note}`).join("\n")}`
+        : "";
+      state.script = `${aiScript.script}${notes}`;
+      renderScript();
+      renderTimeBudget();
+      persistState();
+      return;
+    }
+  } catch (error) {
+    console.warn(error);
+  } finally {
+    setAiBusy(false);
+  }
+
   const recap = state.slides
     .slice(0, Math.min(startPage - 1, state.slides.length))
     .slice(-3)
     .map((slide) => slide.title)
     .join("、");
 
-  state.budget = { ...budget, wpm, targetWords };
   state.script = [
     `【開場與前情提要｜約 ${formatNumber(budget.opening)} 分鐘】`,
     `各位同學，我們先用一分鐘把上一段內容接回來。上一堂課最重要的線索是：${recap || "上一段的核心概念與今日主題的連接"}。今天我們會從第 ${startPage} 頁開始，把「${inputs.topic}」推進到可以解釋、比較，並能回答真實情境問題的程度。`,
@@ -404,7 +538,10 @@ function generateScript() {
 }
 
 function reviseScript(mode) {
-  if (!state.script) generateScript();
+  if (!state.script) {
+    generateScript();
+    return;
+  }
   if (mode === "shorten") {
     const paragraphs = state.script.split("\n").filter((line) => line.trim());
     state.script = paragraphs.filter((_, index) => index % 3 !== 2).join("\n");
@@ -447,13 +584,33 @@ function renderTimeBudget() {
   dom.targetWordsStatus.textContent = String(targetWords);
 }
 
-function sendAssistantMessage() {
+async function sendAssistantMessage() {
   const question = clean(dom.assistantQuestion.value);
   if (!question) return;
   const context = clean(dom.assistantContext.value) || buildAssistantContext();
   state.messages.push({ role: "user", text: question });
-  state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
   dom.assistantQuestion.value = "";
+  renderChat();
+
+  setAiBusy(true, "助理回應中");
+  try {
+    const aiReply = await requestAi("assistant", { context, question });
+    if (aiReply?.answer) {
+      const checks = Array.isArray(aiReply.checks) && aiReply.checks.length
+        ? `\n\n需查核：\n${aiReply.checks.map((item) => `- ${item}`).join("\n")}`
+        : "";
+      const nextMove = aiReply.nextMove ? `\n\n下一步：${aiReply.nextMove}` : "";
+      state.messages.push({ role: "assistant", text: `${aiReply.answer}${checks}${nextMove}` });
+    } else {
+      state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
+    }
+  } catch (error) {
+    console.warn(error);
+    state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
+  } finally {
+    setAiBusy(false);
+  }
+
   renderChat();
   persistState();
 }
@@ -559,6 +716,7 @@ function exportProjectJson() {
     exportedAt: new Date().toISOString(),
     inputs: state.lastLessonInputs || getLessonInputs(),
     slides: state.slides,
+    questions: state.questions,
     script: state.script,
     versions: state.versions,
   };
@@ -585,13 +743,15 @@ function clearProject() {
   localStorage.removeItem(STORAGE_KEY);
   state.slides = [];
   state.script = "";
+  state.questions = [];
   state.versions = [];
   state.messages = [];
   state.lastLessonInputs = null;
+  state.budget = null;
   generateLesson();
 }
 
-function loadDemoProject() {
+async function loadDemoProject() {
   setFormInputs({
     topic: "光合作用與能量轉換",
     subject: "高中生物",
@@ -602,10 +762,10 @@ function loadDemoProject() {
     context: "學生已學過細胞構造，但對能量轉換與反應位置仍容易混淆。",
     bloom: ["remember", "understand", "analyze", "evaluate"],
   });
-  generateLesson();
+  await generateLesson();
   dom.startPage.value = "4";
   dom.scriptMinutes.value = "18";
-  generateScript();
+  await generateScript();
   saveVersion();
 }
 
@@ -614,6 +774,28 @@ function renderStatus() {
   dom.durationStatus.textContent = String((state.lastLessonInputs || getLessonInputs()).duration);
   dom.scriptWordStatus.textContent = String(countWords(state.script));
   dom.versionStatus.textContent = String(state.versions.length);
+}
+
+function renderAiStatus() {
+  if (!dom.aiStatus) return;
+  const label = state.ai.busy
+    ? state.ai.message
+    : state.ai.enabled
+      ? `OpenAI ${state.ai.model}`
+      : state.ai.message || "本機規則";
+  dom.aiStatus.innerHTML = `<span>AI 模式</span><strong>${escapeHtml(label)}</strong>`;
+}
+
+function setAiBusy(busy, message = "") {
+  state.ai.busy = busy;
+  if (message) state.ai.message = message;
+  if (!busy && state.ai.enabled) {
+    state.ai.message = "OpenAI 已連線";
+  }
+  if (!busy && !state.ai.enabled && state.ai.checked) {
+    state.ai.message = "本機規則";
+  }
+  renderAiStatus();
 }
 
 function buildSlideTitle(event, topic, index) {
@@ -813,6 +995,7 @@ function persistState() {
   const payload = {
     slides: state.slides,
     script: state.script,
+    questions: state.questions,
     versions: state.versions,
     messages: state.messages,
     lastLessonInputs: state.lastLessonInputs,
@@ -830,6 +1013,7 @@ function restoreState() {
     const payload = JSON.parse(raw);
     state.slides = payload.slides || [];
     state.script = payload.script || "";
+    state.questions = payload.questions || [];
     state.versions = payload.versions || [];
     state.messages = payload.messages || [];
     state.lastLessonInputs = payload.lastLessonInputs || null;

@@ -56,11 +56,17 @@
 
 ## MVP 邊界
 
-這個版本是可操作的前端原型，使用本機規則生成內容，不需要 API key 或後端服務。它刻意保留與真正 AI 後端銜接的資料結構：課程參數、投影片陣列、講稿、版本、助理訊息都以 JSON 狀態管理。
+這個版本是可操作的前端原型，預設使用本機規則生成內容，不需要 API key 或後端服務。第二階段新增了無套件 Node.js 後端代理：若提供 `OPENAI_API_KEY`，教材生成、進度講稿與即時助理會改走 OpenAI Responses API；若沒有 key，前端自動回到本機 fallback。
+
+已在第二階段新增：
+
+- `server.js` 作為本機 AI proxy，避免把 API key 放在瀏覽器端。
+- `/api/ai/lesson` 生成結構化教材與追問。
+- `/api/ai/script` 依教材、起始頁、分鐘與 WPM 生成講稿。
+- `/api/ai/assistant` 生成課堂即時回應、查核點與下一步操作。
 
 未在本版本實作：
 
-- 真正的 LLM 生成
 - PPTX/PDF 內容解析
 - RAG 向量資料庫
 - PPTX 原生輸出
