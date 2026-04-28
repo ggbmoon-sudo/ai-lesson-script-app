@@ -109,6 +109,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindDom();
   bindEvents();
   restoreDriveSettings();
+  await loadAppConfig();
   restoreState();
   await checkAiHealth();
   if (!state.slides.length) {
@@ -314,6 +315,23 @@ async function checkAiHealth() {
     };
   }
   renderAiStatus();
+}
+
+async function loadAppConfig() {
+  if (window.location.protocol === "file:") return;
+  try {
+    const response = await fetch("/api/config");
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.googleDriveClientId && !state.drive.clientId) {
+      state.drive.clientId = data.googleDriveClientId;
+      state.drive.status = "已載入本機 Google Drive Client ID";
+      persistDriveSettings();
+      renderDrivePanel();
+    }
+  } catch {
+    // Optional local config only; the app still works if unavailable.
+  }
 }
 
 async function requestAi(type, payload) {

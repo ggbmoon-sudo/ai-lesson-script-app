@@ -57,6 +57,12 @@ http://localhost:4173
 
 有 API key 時，教材生成、講稿生成與即時助理會透過 `server.js` 呼叫 OpenAI Responses API。沒有 API key 時，前端會自動回到本機規則生成。
 
+如果你想讓 Google Drive OAuth Client ID 自動出現在 APP，可在 `.env` 加入：
+
+```text
+GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
+```
+
 ### 上傳教材
 
 - 離線模式：支援純文字類檔案，例如 `.txt`、`.md`、`.csv`、`.json`。

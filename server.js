@@ -9,6 +9,7 @@ loadEnvFile(path.join(__dirname, ".env"));
 const PORT = Number(process.env.PORT || 4173);
 const MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
 const ROOT = __dirname;
 
 const mimeTypes = {
@@ -92,6 +93,12 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         aiEnabled: Boolean(OPENAI_API_KEY),
         model: MODEL,
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/config") {
+      return sendJson(res, 200, {
+        googleDriveClientId: GOOGLE_DRIVE_CLIENT_ID,
       });
     }
 
