@@ -31,8 +31,12 @@
             <span class="nav-icon">03</span>
             <span>即時助理</span>
           </button>
-          <button class="nav-item" type="button" data-view="library">
+          <button class="nav-item" type="button" data-view="student">
             <span class="nav-icon">04</span>
+            <span>學生問答</span>
+          </button>
+          <button class="nav-item" type="button" data-view="library">
+            <span class="nav-icon">05</span>
             <span>版本匯出</span>
           </button>
         </nav>
@@ -58,6 +62,10 @@
             <button class="action-button ghost" id="saveVersionBtn" type="button">
               <span class="button-icon">V</span>
               <span>儲存版本</span>
+            </button>
+            <button class="action-button ghost" id="publishLessonBtn" type="button">
+              <span class="button-icon">P</span>
+              <span>發布教材</span>
             </button>
             <button class="action-button" id="exportJsonBtn" type="button">
               <span class="button-icon">↓</span>
@@ -204,9 +212,9 @@
 
               <label class="file-zone">
                 <span>上傳教材文字檔</span>
-                <input id="materialFileInput" type="file" accept=".txt,.md,.csv,.json,.pptx,.docx,.pdf" />
+                <input id="materialFileInput" type="file" accept=".txt,.md,.csv,.json,.pptx,.docx,.xlsx,.pdf" />
               </label>
-              <div class="parse-status" id="materialStatus">支援 TXT、MD、PPTX、DOCX、PDF；PPTX/PDF 需以伺服器模式開啟。</div>
+              <div class="parse-status" id="materialStatus">支援 TXT、MD、PPTX、DOCX、XLSX、PDF；Office/PDF 需以伺服器模式開啟。</div>
 
               <label>
                 教材文字
@@ -327,6 +335,45 @@
                 <h2>回應紀錄</h2>
               </div>
               <div class="chat-log" id="chatLog"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="studentView" data-view-panel="student">
+          <div class="two-column">
+            <section class="panel">
+              <div class="panel-heading">
+                <p class="eyebrow">Published-only QA</p>
+                <h2>學生端教材問答</h2>
+              </div>
+              <div class="published-summary" id="publishedSummary"></div>
+              <label>
+                學生問題
+                <textarea id="studentQuestionInput" rows="5" placeholder="例如：為什麼這一段要先講概念再做實作？"></textarea>
+              </label>
+              <div class="control-bar">
+                <button class="action-button" id="askStudentBtn" type="button">
+                  <span class="button-icon">→</span>
+                  <span>根據已發布教材回答</span>
+                </button>
+                <button class="action-button ghost" id="feedbackHelpfulBtn" type="button">
+                  <span class="button-icon">✓</span>
+                  <span>有幫助</span>
+                </button>
+                <button class="action-button ghost" id="feedbackNeedsTeacherBtn" type="button">
+                  <span class="button-icon">!</span>
+                  <span>需要老師</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">Answer + Sources</p>
+                <h2>答案與來源</h2>
+              </div>
+              <div class="student-answer" id="studentAnswer"></div>
+              <div class="source-list" id="sourceList"></div>
             </section>
           </div>
         </section>

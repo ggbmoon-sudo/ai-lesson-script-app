@@ -61,6 +61,13 @@ const state = {
   versions: [],
   messages: [],
   auditLog: [],
+  publishedRevision: null,
+  studentQa: {
+    question: "",
+    answer: "",
+    mode: "未提問",
+    sources: [],
+  },
   lastLessonInputs: null,
   budget: null,
   ai: {
@@ -121,6 +128,10 @@ function bindDom() {
   dom.assistantContext = document.getElementById("assistantContextInput");
   dom.assistantQuestion = document.getElementById("assistantQuestionInput");
   dom.chatLog = document.getElementById("chatLog");
+  dom.publishedSummary = document.getElementById("publishedSummary");
+  dom.studentQuestion = document.getElementById("studentQuestionInput");
+  dom.studentAnswer = document.getElementById("studentAnswer");
+  dom.sourceList = document.getElementById("sourceList");
   dom.versionList = document.getElementById("versionList");
   dom.auditLog = document.getElementById("auditLog");
   dom.compareBox = document.getElementById("compareBox");
@@ -142,6 +153,7 @@ function bindEvents() {
   document.getElementById("regenerateSlideBtn").addEventListener("click", regenerateSelectedSlide);
   document.getElementById("loadDemoBtn").addEventListener("click", loadDemoProject);
   document.getElementById("saveVersionBtn").addEventListener("click", saveVersion);
+  document.getElementById("publishLessonBtn").addEventListener("click", publishLesson);
   document.getElementById("exportJsonBtn").addEventListener("click", exportProjectJson);
   document.getElementById("exportProjectJsonBtn").addEventListener("click", exportProjectJson);
   document.getElementById("exportLessonMdBtn").addEventListener("click", exportLessonMarkdown);
@@ -161,6 +173,9 @@ function bindEvents() {
   });
 
   document.getElementById("sendAssistantBtn").addEventListener("click", sendAssistantMessage);
+  document.getElementById("askStudentBtn").addEventListener("click", askPublishedLesson);
+  document.getElementById("feedbackHelpfulBtn").addEventListener("click", () => recordStudentFeedback("helpful"));
+  document.getElementById("feedbackNeedsTeacherBtn").addEventListener("click", () => recordStudentFeedback("needs_teacher"));
   dom.assistantQuestion.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       sendAssistantMessage();
@@ -278,6 +293,7 @@ async function generateLesson() {
   }
 
   dom.duration.value = inputs.duration;
+  annotateSlidesWithSourceRefs(inputs);
   dom.materialText.value = state.slides
     .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
     .join("\n\n");
@@ -330,6 +346,25 @@ function normalizeAiSlides(slides, inputs) {
   });
 }
 
+function annotateSlidesWithSourceRefs(inputs) {
+  if (!state.materialPages.length) return;
+  state.slides = state.slides.map((slide) => {
+    const keywords = extractKeywords(`${inputs.topic} ${slide.title} ${slide.activity} ${slide.notes}`);
+    const refs = state.materialPages
+      .map((page, index) => ({
+        type: "material",
+        number: page.number || index + 1,
+        title: page.title || `教材片段 ${index + 1}`,
+        score: scoreMaterialPage(page, keywords, index),
+      }))
+      .filter((ref) => ref.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+      .map(({ score, ...ref }) => ref);
+    return { ...slide, sourceRefs: refs };
+  });
+}
+
 function renderQuestions() {
   const inputs = getLessonInputs();
   const questions = state.questions.length
@@ -360,6 +395,7 @@ function renderAll() {
   renderTimeBudget();
   renderScript();
   renderChat();
+  renderPublishedQa();
   renderVersions();
   renderAuditLog();
   renderStatus();
@@ -411,6 +447,7 @@ function renderSlides() {
                 <span>${escapeHtml(slide.event)}</span>
                 <span>${escapeHtml(slide.bloom)}</span>
                 <span>${formatNumber(slide.minutes)} 分</span>
+                ${slide.sourceRefs?.length ? `<span>來源 ${slide.sourceRefs.length}</span>` : ""}
               </div>
             </div>
             <span class="slide-number">${slide.number}</span>
@@ -682,6 +719,127 @@ function renderChat() {
   dom.chatLog.scrollTop = dom.chatLog.scrollHeight;
 }
 
+function renderPublishedQa() {
+  if (!dom.publishedSummary || !dom.studentAnswer || !dom.sourceList) return;
+
+  if (!state.publishedRevision) {
+    dom.publishedSummary.innerHTML = "尚未發布教材。教師按「發布教材」後，學生端才會根據已發布版本回答。";
+  } else {
+    const revision = state.publishedRevision;
+    const materialCount = revision.materialPages?.length || 0;
+    dom.publishedSummary.innerHTML = `
+      <strong>${escapeHtml(revision.inputs.topic || "已發布教材")}</strong><br />
+      發布時間：${escapeHtml(new Date(revision.publishedAt).toLocaleString("zh-Hant"))}<br />
+      投影片：${revision.slides.length} 頁｜教材片段：${materialCount}｜模式：教材有據
+    `;
+  }
+
+  dom.studentQuestion.value = state.studentQa.question || "";
+  dom.studentAnswer.innerHTML = state.studentQa.answer
+    ? `<strong>${escapeHtml(state.studentQa.mode)}</strong>\n${escapeHtml(state.studentQa.answer)}`
+    : "學生提問後，答案會在這裡顯示。";
+  renderStudentSources(state.studentQa.sources || []);
+}
+
+function renderStudentSources(sources) {
+  if (!sources.length) {
+    dom.sourceList.innerHTML = emptyText("尚未有來源引用");
+    return;
+  }
+
+  dom.sourceList.innerHTML = sources
+    .map(
+      (source) => `
+        <article class="source-item">
+          <strong>${escapeHtml(source.label)}</strong>
+          <span>${escapeHtml(source.preview)}</span>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function askPublishedLesson() {
+  const question = clean(dom.studentQuestion.value);
+  if (!question) return;
+
+  if (!state.publishedRevision) {
+    state.studentQa = {
+      question,
+      mode: "尚未發布",
+      answer: "目前沒有已發布教材。請教師先發布教材版本，學生端才可提問。",
+      sources: [],
+    };
+    renderPublishedQa();
+    return;
+  }
+
+  const sources = retrievePublishedSources(question, state.publishedRevision);
+  const supported = sources.length && sources[0].score >= 2;
+  state.studentQa = {
+    question,
+    mode: supported ? "教材有據" : "尚未在教材找到",
+    answer: supported ? buildGroundedStudentAnswer(question, sources) : "已發布教材中未找到足夠依據回答這個問題。請改問與目前教材更直接相關的問題，或請老師補充。",
+    sources: supported ? sources.slice(0, 4) : [],
+  };
+  logAudit("學生問答", `${state.studentQa.mode}：${question.slice(0, 80)}`);
+  renderPublishedQa();
+  persistState();
+}
+
+function retrievePublishedSources(question, revision) {
+  const keywords = extractKeywords(question);
+  const slideSources = (revision.slides || []).map((slide) => ({
+    type: "slide",
+    label: `投影片 ${slide.number || ""}：${slide.title}`,
+    text: `${slide.title}\n${slide.event}\n${slide.bloom}\n${slide.activity}\n${slide.notes}`,
+    preview: `${slide.event || ""} ${slide.bloom || ""} ${String(slide.notes || "").slice(0, 160)}`,
+  }));
+  const materialSources = (revision.materialPages || []).map((page) => ({
+    type: "material",
+    label: `教材片段 ${page.number}：${page.title}`,
+    text: page.text,
+    preview: String(page.text || "").slice(0, 180),
+  }));
+  const allSources = [...slideSources, ...materialSources];
+
+  return allSources
+    .map((source) => ({ ...source, score: scoreSource(source.text, keywords) }))
+    .filter((source) => source.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6);
+}
+
+function scoreSource(text, keywords) {
+  const normalized = String(text || "").toLowerCase();
+  return keywords.reduce((score, keyword) => {
+    if (!keyword) return score;
+    const lowered = keyword.toLowerCase();
+    return score + (normalized.includes(lowered) ? Math.max(1, Math.min(4, lowered.length)) : 0);
+  }, 0);
+}
+
+function buildGroundedStudentAnswer(question, sources) {
+  const top = sources.slice(0, 3);
+  const keyPoints = top
+    .map((source, index) => `${index + 1}. ${source.preview.replace(/\s+/g, " ").slice(0, 110)}`)
+    .join("\n");
+  return [
+    `根據已發布教材，這題可以先從 ${top[0].label} 理解。`,
+    "",
+    keyPoints,
+    "",
+    `簡短回答：${question} 的答案需要回到上面來源中的概念與例子；如果你想確認細節，請先打開來源片段，再對照老師發布的投影片。`,
+  ].join("\n");
+}
+
+function recordStudentFeedback(label) {
+  if (!state.studentQa.question) return;
+  logAudit("學生回饋", `${label}｜${state.studentQa.question.slice(0, 80)}`);
+  dom.studentAnswer.innerHTML = `<strong>${escapeHtml(state.studentQa.mode)}</strong>\n${escapeHtml(state.studentQa.answer)}\n\n已記錄回饋：${label === "helpful" ? "有幫助" : "需要老師"}`;
+  persistState();
+}
+
 function saveVersion() {
   const inputs = state.lastLessonInputs || getLessonInputs();
   const version = {
@@ -697,6 +855,26 @@ function saveVersion() {
   logAudit("版本保存", `${version.name} 已保存`);
   renderVersions();
   renderStatus();
+  persistState();
+}
+
+function publishLesson() {
+  const inputs = state.lastLessonInputs || getLessonInputs();
+  annotateSlidesWithSourceRefs(inputs);
+  logAudit("發布", `${inputs.topic} 已發布，學生端只會根據此版本回答`);
+  const revision = {
+    id: cryptoId(),
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    inputs: structuredCloneSafe(inputs),
+    slides: structuredCloneSafe(state.slides),
+    script: state.script,
+    materialPages: structuredCloneSafe(state.materialPages),
+    materialMeta: structuredCloneSafe(state.materialMeta),
+    auditLog: structuredCloneSafe(state.auditLog),
+  };
+  state.publishedRevision = revision;
+  renderPublishedQa();
   persistState();
 }
 
@@ -804,6 +982,8 @@ function exportProjectJson() {
     script: state.script,
     versions: state.versions,
     auditLog: state.auditLog,
+    publishedRevision: state.publishedRevision,
+    studentQa: state.studentQa,
   };
   persistState();
   downloadFile("eduscript-ai-project.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
@@ -874,6 +1054,13 @@ function clearProject() {
   state.versions = [];
   state.messages = [];
   state.auditLog = [];
+  state.publishedRevision = null;
+  state.studentQa = {
+    question: "",
+    answer: "",
+    mode: "未提問",
+    sources: [],
+  };
   state.lastLessonInputs = null;
   state.budget = null;
   generateLesson();
@@ -1121,12 +1308,23 @@ function scoreMaterialPage(page, keywords, offset) {
 }
 
 function extractKeywords(text) {
-  const raw = String(text || "")
+  const value = String(text || "");
+  const raw = value
     .replace(/[，。！？、；：「」『』（）()[\]{}]/g, " ")
     .split(/\s+/)
     .map((word) => word.trim())
     .filter((word) => word.length >= 2);
-  return Array.from(new Set(raw)).slice(0, 12);
+  const cjkTokens = [];
+  const cjkSequences = value.match(/[\u3400-\u9fff]{2,}/g) || [];
+  cjkSequences.forEach((sequence) => {
+    for (let index = 0; index < sequence.length - 1; index += 1) {
+      cjkTokens.push(sequence.slice(index, index + 2));
+    }
+    for (let index = 0; index < sequence.length - 2; index += 2) {
+      cjkTokens.push(sequence.slice(index, index + 3));
+    }
+  });
+  return Array.from(new Set([...raw, ...cjkTokens])).slice(0, 24);
 }
 
 function chunkTextForClient(text, maxLength) {
@@ -1207,6 +1405,7 @@ ${state.script || "尚未生成講稿"}
 ## AI 生成透明度
 
 本內容由 AI 或本機規則協助生成，仍需教師完成最後審核。
+${state.publishedRevision ? `\n發布版本：${state.publishedRevision.id}｜${new Date(state.publishedRevision.publishedAt).toLocaleString("zh-Hant")}\n` : ""}
 
 ${audit || "尚未有生成紀錄"}
 `;
@@ -1249,6 +1448,8 @@ function persistState() {
     versions: state.versions,
     messages: state.messages,
     auditLog: state.auditLog,
+    publishedRevision: state.publishedRevision,
+    studentQa: state.studentQa,
     lastLessonInputs: state.lastLessonInputs,
     materialText: dom.materialText.value,
     assistantContext: dom.assistantContext.value,
@@ -1270,6 +1471,8 @@ function restoreState() {
     state.versions = payload.versions || [];
     state.messages = payload.messages || [];
     state.auditLog = payload.auditLog || [];
+    state.publishedRevision = payload.publishedRevision || null;
+    state.studentQa = payload.studentQa || state.studentQa;
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);
     dom.materialText.value = payload.materialText || buildMaterialFromSlides();

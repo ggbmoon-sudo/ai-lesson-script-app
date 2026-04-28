@@ -199,7 +199,7 @@ async function handlePptxExport(req, res) {
 }
 
 function parseMaterialBuffer(buffer, filename, extension, mimeType) {
-  if ([".pptx", ".docx"].includes(extension)) {
+  if ([".pptx", ".docx", ".xlsx"].includes(extension)) {
     return parseOpenXmlMaterial(buffer, filename, extension);
   }
 
@@ -252,6 +252,10 @@ function parseOpenXmlMaterial(buffer, filename, extension) {
     };
   }
 
+  if (extension === ".xlsx") {
+    return parseXlsxMaterial(entries, filename);
+  }
+
   const documentXml = entries.get("word/document.xml");
   if (!documentXml) {
     return {
@@ -300,6 +304,91 @@ function parsePdfMaterial(buffer, filename) {
     text: pagesToText(pages),
     warning: "PDF 解析為基礎文字抽取；掃描圖像型 PDF 需要 OCR 才能完整讀取。",
   };
+}
+
+function parseXlsxMaterial(entries, filename) {
+  const sharedStrings = parseSharedStrings(entries.get("xl/sharedStrings.xml")?.toString("utf8") || "");
+  const workbook = entries.get("xl/workbook.xml")?.toString("utf8") || "";
+  const sheetNames = parseWorkbookSheetNames(workbook);
+  const worksheetPaths = Array.from(entries.keys())
+    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
+    .sort(compareNumberedPath);
+
+  const pages = worksheetPaths.map((name, index) => {
+    const rows = parseWorksheetRows(entries.get(name).toString("utf8"), sharedStrings);
+    const sheetName = sheetNames[index] || `工作表 ${index + 1}`;
+    const textRows = rows
+      .slice(0, 120)
+      .map((row) => row.map((cell) => cell.value).filter(Boolean).join(" | "))
+      .filter(Boolean);
+    const text = textRows.join("\n");
+    return {
+      number: index + 1,
+      title: sheetName,
+      text: text || `${sheetName} 沒有可讀文字。`,
+      rows,
+    };
+  });
+
+  return {
+    filename,
+    type: "xlsx",
+    pages,
+    text: pagesToText(pages),
+    warning: pages.length ? "" : "未能在 XLSX 找到工作表文字。",
+  };
+}
+
+function parseSharedStrings(xml) {
+  if (!xml) return [];
+  return (xml.match(/<si\b[\s\S]*?<\/si>/g) || []).map((item) => extractXmlText(item));
+}
+
+function parseWorkbookSheetNames(xml) {
+  const names = [];
+  const regex = /<sheet\b[^>]*name="([^"]+)"/g;
+  let match;
+  while ((match = regex.exec(xml))) {
+    names.push(decodeXml(match[1]));
+  }
+  return names;
+}
+
+function parseWorksheetRows(xml, sharedStrings) {
+  const rows = [];
+  const rowMatches = xml.match(/<row\b[\s\S]*?<\/row>/g) || [];
+  for (const rowXml of rowMatches) {
+    const cells = [];
+    const cellRegex = /<c\b([^>]*)>([\s\S]*?)<\/c>/g;
+    let match;
+    while ((match = cellRegex.exec(rowXml))) {
+      const attrs = match[1];
+      const body = match[2];
+      const ref = attrs.match(/\br="([^"]+)"/)?.[1] || "";
+      const type = attrs.match(/\bt="([^"]+)"/)?.[1] || "";
+      const rawValue = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] || "";
+      const inlineText = body.match(/<is\b[\s\S]*?<\/is>/)?.[0] || "";
+      let value = "";
+
+      if (type === "s") {
+        value = sharedStrings[Number(rawValue)] || "";
+      } else if (type === "inlineStr") {
+        value = extractXmlText(inlineText);
+      } else {
+        value = decodeXml(rawValue);
+      }
+
+      cells.push({
+        ref,
+        column: ref.replace(/\d+/g, ""),
+        value: normalizeWhitespace(value),
+      });
+    }
+    if (cells.some((cell) => cell.value)) {
+      rows.push(cells);
+    }
+  }
+  return rows;
 }
 
 function createPptxDeck({ inputs, slides, script }) {
@@ -806,7 +895,7 @@ function extractFirstNumber(value) {
 
 function extractXmlText(xml) {
   const chunks = [];
-  const regex = /<(?:a|w):t\b[^>]*>([\s\S]*?)<\/(?:a|w):t>/g;
+  const regex = /<(?:[a-z]+:)?t\b[^>]*>([\s\S]*?)<\/(?:[a-z]+:)?t>/g;
   let match;
   while ((match = regex.exec(xml))) {
     chunks.push(decodeXml(match[1]));

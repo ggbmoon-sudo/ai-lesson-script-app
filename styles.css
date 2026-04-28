@@ -677,6 +677,54 @@ legend {
   line-height: 1.62;
 }
 
+.published-summary,
+.student-answer,
+.source-list {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 12px;
+  line-height: 1.62;
+}
+
+.published-summary {
+  margin-bottom: 14px;
+  color: var(--muted);
+}
+
+.student-answer {
+  min-height: 190px;
+  white-space: pre-wrap;
+}
+
+.student-answer strong {
+  color: var(--teal-dark);
+}
+
+.source-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.source-item {
+  border-left: 4px solid var(--teal);
+  padding: 8px 10px;
+  background: white;
+}
+
+.source-item strong,
+.source-item span {
+  display: block;
+}
+
+.source-item span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .version-list,
 .export-grid {
   display: grid;
