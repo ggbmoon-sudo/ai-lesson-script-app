@@ -1426,8 +1426,21 @@ async function generateScript() {
       const notes = Array.isArray(aiScript.teachingNotes) && aiScript.teachingNotes.length
         ? `\n\n【教師課前提醒】\n${aiScript.teachingNotes.map((note) => `- ${note}`).join("\n")}`
         : "";
-      state.script = `${aiScript.script}${notes}`;
-      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
+      state.script = ensureCompleteLectureScript(`${aiScript.script}${notes}`, {
+        inputs,
+        fragments,
+        focusedMaterial,
+        startPage,
+        minutes,
+        budget,
+        wpm,
+        targetWords,
+      });
+      const actualWords = countWords(state.script);
+      const detail = actualWords < Math.round(targetWords * 0.9)
+        ? `仍低於目標，已補成 ${actualWords}/${targetWords} 字`
+        : `達到 ${actualWords}/${targetWords} 字`;
+      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成完整講稿（${detail}）`);
       renderScript();
       renderTimeBudget();
       markDriveBackupNeeded("講稿生成");
@@ -1459,8 +1472,18 @@ async function generateScript() {
     `【收束與緩衝｜約 ${formatNumber(budget.buffer)} 分鐘】`,
     `最後我們整理三句話：第一，今天的核心概念是什麼；第二，它和上一堂課如何連接；第三，下一次你看到類似題目時要先找哪個線索。請把這三句寫在筆記最下方，作為本節 exit ticket。`,
   ].join("\n");
+  state.script = ensureCompleteLectureScript(state.script, {
+    inputs,
+    fragments,
+    focusedMaterial,
+    startPage,
+    minutes,
+    budget,
+    wpm,
+    targetWords,
+  });
 
-  logAudit("講稿生成", `本機規則依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
+  logAudit("講稿生成", `本機規則依第 ${startPage} 頁與 ${minutes} 分鐘設定生成完整講稿（${countWords(state.script)}/${targetWords} 字）`);
   renderScript();
   renderTimeBudget();
   markDriveBackupNeeded("講稿生成");
@@ -1481,6 +1504,122 @@ function reviseScript(mode) {
   renderScript();
   markDriveBackupNeeded("講稿修訂");
   persistState();
+}
+
+function ensureCompleteLectureScript(script, context) {
+  const minimumWords = Math.max(600, Math.round(context.targetWords * 0.92));
+  let output = normalizeLectureScriptForStudents(script, context);
+
+  if (countWords(output) >= minimumWords) {
+    return appendScriptWordBudgetNote(output, context);
+  }
+
+  const expansion = buildSelfStudyExpansion(context, minimumWords - countWords(output));
+  output = `${output}\n\n${expansion}`;
+
+  while (countWords(output) < minimumWords) {
+    output = `${output}\n\n${buildAdditionalDeepeningBlock(context, countWords(output), minimumWords)}`;
+  }
+
+  return appendScriptWordBudgetNote(output, context);
+}
+
+function normalizeLectureScriptForStudents(script, context) {
+  const normalized = clean(script);
+  const header = [
+    `# ${context.inputs.topic}｜完整課堂講稿`,
+    "",
+    `目標時間：${context.minutes} 分鐘｜核心講授：${formatNumber(context.budget.core)} 分鐘｜目標字數：約 ${context.targetWords}`,
+    "",
+    "這份講稿設計成可由教師口頭講授，也可讓學生課後自行閱讀。內容包含概念解釋、操作脈絡、檢查點與常見錯誤。",
+  ].join("\n");
+
+  if (!normalized) return header;
+  if (normalized.startsWith("# ")) return normalized;
+  return `${header}\n\n${normalized}`;
+}
+
+function appendScriptWordBudgetNote(script, context) {
+  const words = countWords(script);
+  const note = `\n\n【字數與使用方式】\n目前講稿約 ${words} 字；目標核心講授字數約 ${context.targetWords} 字。若課堂時間不足，可先刪減「延伸閱讀」或「自我檢查」段落；若學生自學，建議完整閱讀並完成每段 checkpoint。`;
+  return script.includes("【字數與使用方式】") ? script : `${script}${note}`;
+}
+
+function buildSelfStudyExpansion(context, deficit) {
+  const fragments = context.fragments.length ? context.fragments : textToPages(context.focusedMaterial).map((page) => page.text).slice(0, 6);
+  const usable = fragments.length ? fragments : [
+    `${context.inputs.topic} 需要學生把 Linux 基礎、Kubernetes resource model 與實際操作連接起來。`,
+  ];
+  const blocks = [
+    `【完整自學補充講義｜補足核心講授】\n以下內容用來把短講稿擴展成學生可以自行閱讀的完整版本。它不是額外離題補充，而是把投影片 prompt 中的重點轉成可理解的課堂文字。`,
+  ];
+
+  usable.slice(0, 8).forEach((fragment, index) => {
+    blocks.push(buildFragmentTeachingBlock(fragment, index, context));
+  });
+
+  blocks.push(buildCommandAndYamlBridge(context));
+  blocks.push(buildCommonMistakesBlock(context));
+  blocks.push(buildStudentSelfCheckBlock(context));
+
+  let output = blocks.join("\n\n");
+  while (countWords(output) < Math.min(deficit, context.targetWords * 0.65)) {
+    output = `${output}\n\n${buildAdditionalDeepeningBlock(context, countWords(output), deficit)}`;
+  }
+  return output;
+}
+
+function buildFragmentTeachingBlock(fragment, index, context) {
+  const topic = context.inputs.topic;
+  const title = firstClientLine(fragment) || `教材片段 ${index + 1}`;
+  const cleanFragment = String(fragment || "").replace(/\s+/g, " ").slice(0, 900);
+  return `【核心段落 ${index + 1}：${title}】
+
+這一段要讓學生理解的不是單一指令，而是「為什麼這個步驟在 ${topic} 中必要」。請先把它看成一條因果鏈：底層環境是否穩定，會影響 Kubernetes 元件能否啟動；Kubernetes 元件是否正常，會影響 Pod、Service、Ingress 等資源能否被建立；而資源能否被建立，最後會影響應用是否真的可以對外提供服務。
+
+教材素材重點：${cleanFragment}
+
+學生閱讀時要特別留意三件事。第一，這裡出現的每個名詞都應該能連回一個實際檢查方法，例如 node 狀態、事件、log、YAML 欄位或 service endpoint。第二，當你看到錯誤時，不要只背答案，而要問：錯誤是在 Linux 層、container runtime 層、Kubernetes API 層，還是 application workload 層？第三，CKA 與 CKAD 的差別不是誰比較高級，而是責任範圍不同：CKA 關注 cluster 能不能穩定運作，CKAD 關注應用能不能以 Kubernetes-native 的方式被描述和部署。
+
+Checkpoint：請用自己的話寫下本段最重要的一個「原因」和一個「結果」。如果你只能抄名詞，代表你還沒有真正掌握。`;
+}
+
+function buildCommandAndYamlBridge(context) {
+  return `【從 Linux 指令到 Kubernetes YAML 的橋樑】
+
+學習 ${context.inputs.topic} 時，最容易卡住的地方，是從 Linux 管理員熟悉的命令式思維，轉向 Kubernetes 的宣告式思維。在 Linux 中，你可能會輸入 systemctl start nginx、檢查 journalctl、查看 df -h 或 ip addr。這些操作的重點是「我現在叫系統做一件事」。但在 Kubernetes 中，你更多時候是寫一份 YAML，描述你想要的最終狀態，例如需要幾個 replicas、使用哪個 image、開放哪個 port、是否需要 readinessProbe。
+
+這種轉換非常重要。因為 Kubernetes 的控制器會不斷把現實狀態拉回你宣告的狀態。如果 Pod 掛掉，Deployment 會嘗試重建；如果 Service selector 不對，流量就找不到目標 Pod；如果 resource request 過高，scheduler 可能無法安排到 node。學生需要理解：YAML 不是普通設定檔，而是你交給 Kubernetes API 的「合約」。
+
+因此，在讀每一頁 PPT 時，都要問三個問題。第一，這個畫面對應哪一個 resource？第二，這個 resource 的 spec 描述了什麼 desired state？第三，當 desired state 和 actual state 不一致時，我可以用哪個 kubectl 指令找到差異？這三個問題就是從 Linux 管理員走向 Kubernetes 專家的橋樑。`;
+}
+
+function buildCommonMistakesBlock(context) {
+  return `【常見錯誤與排查路徑】
+
+學生在這堂課常見的第一個錯誤，是把 Kubernetes 問題全部當成 YAML 打錯。其實很多 cluster 問題來自 Linux 層，例如 swap 未關閉、DNS 解析失敗、時間不同步、磁碟滿了、container runtime 未正常啟動，或者 firewall rules 阻擋了必要流量。當 node 狀態是 NotReady 時，不應該立刻改 Deployment，而應該先檢查 node、kubelet、container runtime 和 network。
+
+第二個錯誤，是只看 kubectl get 的表面結果。kubectl get 只能告訴你目前狀態，不能完整告訴你原因。要追原因，就要用 kubectl describe 看 events，用 kubectl logs 看 container output，用 kubectl get yaml 看實際 spec，用 kubectl explain 查欄位意義。對 CKA/CKAD 來說，這些排查指令比背大量答案更重要。
+
+第三個錯誤，是忽略 public endpoint 的驗收。在期末 Skill Test 或 EKS lab 中，部署成功不代表任務完成。你必須證明外部可以訪問，並說明 endpoint、port、service type、ingress rule 或 load balancer 的角色。如果 endpoint 不能公開，就要能說明是 security group、service selector、ingress controller、DNS 還是 application 本身造成問題。`;
+}
+
+function buildStudentSelfCheckBlock(context) {
+  return `【學生自我檢查】
+
+讀完這堂課後，請不用看答案完成以下檢查。第一，請列出安裝或運行 Kubernetes 前，一台 Linux VM 至少要檢查的五件事，並說明每一件事如果出錯會造成什麼後果。第二，請解釋 CKA 和 CKAD 的責任分界：哪一些問題通常由 cluster administrator 處理，哪一些問題通常由 application developer 處理。第三，請用一個例子說明命令式操作和宣告式 YAML 的差別。第四，請寫出你排查一個 Pod 無法啟動時會採用的四個指令或步驟。
+
+如果你可以完成以上四項，代表你已經不只是聽過名詞，而是能把 Linux、Kubernetes resource、kubectl 排查和 assessment 要求連接起來。這也是本課的真正目標：不只是生成一份 PPT 或背一份講稿，而是讓你能在真實 lab、CKA/CKAD 練習和期末 skill test 中獨立判斷下一步。`;
+}
+
+function buildAdditionalDeepeningBlock(context, currentWords, targetWords) {
+  return `【延伸閱讀補足｜${currentWords}/${targetWords}】
+
+為了讓本堂內容可以真正支持自學，這裡再補一層推理。學習 Kubernetes 時，學生很容易把注意力放在工具名稱，例如 kubeadm、kubectl、Minikube、EKS、Rancher。但工具只是入口，真正要建立的是判斷框架。當你看到一個任務時，先判斷它屬於環境準備、cluster 管理、application deployment、network exposure、storage binding、security policy 還是 troubleshooting。分類完成後，再選擇對應工具。
+
+例如，如果任務要求你公開一個服務，你要先確認 Pod label 是否正確，再確認 Service selector 是否能找到 Pod，然後確認 port、targetPort、nodePort 或 ingress rule 是否配合。這個過程不是背指令，而是逐層驗證資料流。又例如，如果任務要求你修復 node 問題，你要先看 node condition，再看 kubelet 和 container runtime，而不是直接改 application YAML。
+
+這種逐層思考方式，就是從初學者走向 CKA/CKAD 水平的關鍵。請把每個 lab 都當成一次排查訓練：先觀察現象，再提出假設，接著用指令驗證，最後記錄證據。`;
 }
 
 function renderScript() {

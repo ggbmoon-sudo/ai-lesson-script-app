@@ -927,7 +927,9 @@ Bloom 層次：${(inputs.bloom || []).join(", ")}
 }
 
 function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, targetWords }) {
-  return `請根據教材與目前進度生成接續講稿。
+  const minimumWords = Math.round(Number(targetWords || 0) * 0.92);
+  const maximumWords = Math.round(Number(targetWords || 0) * 1.12);
+  return `請根據教材與目前進度生成「完整講義式課堂講稿」。
 
 課題：${inputs.topic}
 科目：${inputs.subject}
@@ -937,16 +939,21 @@ function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, 
 核心講授分鐘：${budget.core}
 建議 WPM：${wpm}
 核心講授目標字數：約 ${targetWords}
+最低可接受字數：${minimumWords}
+最高建議字數：${maximumWords}
 風格：${inputs.style}
 
 教材內容：
 ${String(material || "").slice(0, 12000)}
 
 要求：
-1. 開頭要包含 1 至 2 分鐘前情提要。
-2. 講稿必須可口語朗讀，並加入停頓與互動提示。
-3. 若教材內容不足，請明確標記教師需補資料的位置。
-4. teachingNotes 提供教師課前提醒。`;
+1. 這不是摘要，不是投影片 prompt，也不是只給老師看的提示；請寫成學生自行閱讀也能理解該堂內容的完整講義式講稿。
+2. script 字數必須接近核心講授目標字數，最少 ${minimumWords} 字。不要只產生 1000-2000 字短稿。
+3. 請用清楚段落展開：前情提要、核心概念、操作步驟、例子/比喻、命令或 YAML 解讀、常見錯誤、checkpoint、自學總結。
+4. 若教材是 PPT Prompt，請把 prompt 轉化成可讀講義內容，不要重複「版面設計」「視覺元素」等 prompt 指令。
+5. 不要大量使用「請教師補充」佔位；除非是薪資、最新市場數據、學校政策等必須查證的資料，其他技術概念要直接解釋。
+6. 講稿要可口語朗讀，也要可直接發給學生閱讀。
+7. teachingNotes 只提供教師課前提醒，不要把主要內容放在 teachingNotes。`;
 }
 
 function buildAssistantPrompt({ context, question }) {
