@@ -107,6 +107,7 @@ const state = {
     model: "",
     message: "本機規則",
     busy: false,
+    lastCheckedAt: null,
   },
 };
 
@@ -223,8 +224,14 @@ function bindEvents() {
   document.getElementById("exportLessonMdBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportMarkdownBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportPptxBtn").addEventListener("click", exportPptx);
+  document.getElementById("exportCoursePackBtn").addEventListener("click", exportCoursePack);
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
+  dom.aiStatus.addEventListener("click", (event) => {
+    if (event.target.closest("[data-ai-refresh]")) {
+      refreshAiHealth();
+    }
+  });
   document.getElementById("connectDriveBtn").addEventListener("click", connectGoogleDrive);
   document.getElementById("backupDriveBtn").addEventListener("click", () => backupToGoogleDrive());
   document.getElementById("listDriveBackupsBtn").addEventListener("click", () => listGoogleDriveBackups(true));
@@ -307,7 +314,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -329,6 +336,7 @@ async function checkAiHealth() {
       model: "",
       message: "本機規則",
       busy: false,
+      lastCheckedAt: new Date().toISOString(),
     };
     renderAiStatus();
     return;
@@ -344,6 +352,7 @@ async function checkAiHealth() {
       model: data.model || "",
       message: data.aiEnabled ? `${formatAiProviderName(data.provider)} 已連線` : "本機規則",
       busy: false,
+      lastCheckedAt: new Date().toISOString(),
     };
   } catch {
     state.ai = {
@@ -351,11 +360,19 @@ async function checkAiHealth() {
       enabled: false,
       provider: "local",
       model: "",
-      message: "本機規則",
+      message: "伺服器未連線",
       busy: false,
+      lastCheckedAt: new Date().toISOString(),
     };
   }
   renderAiStatus();
+}
+
+async function refreshAiHealth() {
+  state.ai.busy = true;
+  state.ai.message = "重新檢查 AI";
+  renderAiStatus();
+  await checkAiHealth();
 }
 
 async function loadAppConfig() {
@@ -1659,6 +1676,44 @@ async function exportPptx() {
   }
 }
 
+async function exportCoursePack() {
+  if (window.location.protocol === "file:") {
+    dom.compareBox.textContent = "Course Pack ZIP 需要以 node server.js 啟動後使用 http://localhost:4173。";
+    return;
+  }
+
+  if (!state.annualPlan) generateAnnualPlan();
+
+  setAiBusy(true, "整理 Course Pack");
+  try {
+    const project = buildProjectPayload("course-pack");
+    const response = await fetch("/api/export-course-pack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project,
+        annualMarkdown: buildAnnualMarkdown(state.annualPlan),
+        lessonMarkdown: buildMarkdown(),
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `Course Pack export failed: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    downloadBase64File(payload.filename || "eduscript-ai-course-pack.zip", payload.data, payload.mimeType);
+    logAudit("匯出", `Course Pack ZIP 已匯出：${payload.filename || "eduscript-ai-course-pack.zip"}`);
+    dom.compareBox.textContent = "Course Pack ZIP 已產生，內含年度規劃、教材大綱、講稿、PPTX、Lab / Assessment 摘要與完整 JSON 備份。";
+    persistState();
+  } catch (error) {
+    dom.compareBox.textContent = `Course Pack 匯出失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
+}
+
 async function copyPrompt() {
   const prompt = buildPrompt();
   try {
@@ -2137,12 +2192,30 @@ function renderStatus() {
 
 function renderAiStatus() {
   if (!dom.aiStatus) return;
-  const label = state.ai.busy
-    ? state.ai.message
-    : state.ai.enabled
-      ? `${formatAiProviderName(state.ai.provider)} ${state.ai.model}`
-      : state.ai.message || "本機規則";
-  dom.aiStatus.innerHTML = `<span>AI 模式</span><strong>${escapeHtml(label)}</strong>`;
+  const status = state.ai.busy ? "checking" : state.ai.enabled ? "online" : state.ai.checked ? "fallback" : "checking";
+  const providerName = formatAiProviderName(state.ai.provider);
+  const label = state.ai.busy ? state.ai.message : state.ai.enabled ? providerName : state.ai.message || "本機規則";
+  const detail = state.ai.enabled
+    ? state.ai.model || "server model"
+    : state.ai.checked
+      ? "未使用雲端 AI"
+      : "檢查中";
+  const checkedAt = state.ai.lastCheckedAt
+    ? new Date(state.ai.lastCheckedAt).toLocaleTimeString("zh-Hant", { hour: "2-digit", minute: "2-digit" })
+    : "--:--";
+
+  dom.aiStatus.classList.toggle("ai-online", status === "online");
+  dom.aiStatus.classList.toggle("ai-fallback", status === "fallback");
+  dom.aiStatus.classList.toggle("ai-checking", status === "checking");
+  dom.aiStatus.innerHTML = `
+    <span class="ai-status-light" aria-hidden="true"></span>
+    <div class="ai-status-copy">
+      <span>AI 狀態燈</span>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(detail)} · ${escapeHtml(checkedAt)}</small>
+    </div>
+    <button class="ai-refresh" type="button" data-ai-refresh aria-label="重新檢查 AI 狀態" title="重新檢查 AI 狀態">↻</button>
+  `;
 }
 
 function setAiBusy(busy, message = "") {

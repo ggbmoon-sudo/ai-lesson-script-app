@@ -21,7 +21,8 @@
 - 本機 citation index：發布時建立 chunk id、source hash、搜尋向量與 confidence。
 - 治理指標：顯示發布狀態、citation chunk 數、QA 有據率、拒答率與需老師介入次數。
 - 個人備份：支援本機 JSON 匯入/匯出、Google Drive 雲端備份與還原、未備份提醒與自動備份開關。
-- 匯出：支援 Markdown、JSON 與伺服器模式 PPTX。
+- 匯出：支援 Markdown、JSON、伺服器模式 PPTX，以及一鍵 Course Pack ZIP。
+- AI 狀態燈：顯示 Gemini / OpenAI / 本機 fallback，並可在 APP 內重新檢查連線。
 - AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
 ## 使用方式

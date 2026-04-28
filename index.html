@@ -58,8 +58,11 @@
             <h1>專業 AI 教材與講稿生成 APP</h1>
           </div>
           <div class="ai-status" id="aiStatus">
-            <span>AI 模式</span>
-            <strong>偵測中</strong>
+            <span class="ai-status-light" aria-hidden="true"></span>
+            <div>
+              <span>AI 模式</span>
+              <strong>偵測中</strong>
+            </div>
           </div>
           <label class="role-switch">
             <span>角色</span>
@@ -558,6 +561,10 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                 <button class="export-tile" id="exportPptxBtn" type="button">
                   <strong>PowerPoint</strong>
                   <span>PPTX</span>
+                </button>
+                <button class="export-tile featured" id="exportCoursePackBtn" type="button">
+                  <strong>Course Pack</strong>
+                  <span>ZIP：全年 + PPT + 講稿</span>
                 </button>
                 <button class="export-tile" id="copyPromptBtn" type="button">
                   <strong>AI Prompt</strong>
