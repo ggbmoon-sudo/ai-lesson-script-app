@@ -18,11 +18,16 @@ GEMINI_API_KEY=your_gemini_key_if_you_want_server_ai
 GEMINI_MODEL=gemini-3-pro-preview
 GEMINI_THINKING_LEVEL=high
 GOOGLE_DRIVE_CLIENT_ID=your_google_oauth_client_id.apps.googleusercontent.com
+GAMMA_API_KEY=your_gamma_api_key_if_you_want_gamma_ppt_export
+GAMMA_EXPORT_AS=pptx
+GAMMA_TEXT_MODE=generate
 PUBLIC_BASE_URL=https://your-service-name.onrender.com
 ```
 
 `OPENAI_API_KEY` and `GEMINI_API_KEY` are optional. Use `AI_PROVIDER=gemini` to force Gemini, `AI_PROVIDER=openai` to force OpenAI, or `AI_PROVIDER=auto` to use OpenAI first and Gemini second. If both keys are empty, the frontend falls back to local rule-based generation.
 Use `gemini-3-pro-preview` with `GEMINI_THINKING_LEVEL=high` for highest-quality lesson scripts. Use `gemini-3-flash-preview` if you prefer lower latency/cost, or `gemini-2.5-flash` with `GEMINI_THINKING_BUDGET=-1` for dynamic thinking on the 2.5 series.
+
+`GAMMA_API_KEY` is optional. If it is empty, the `Gamma PPT` button exports a Gamma-ready Markdown prompt instead of calling Gamma. If it is set, `server.js` calls Gamma from the backend so the key is never exposed to the browser.
 
 ## Google Drive OAuth
 

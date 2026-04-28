@@ -17,6 +17,12 @@ const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING
 const GEMINI_THINKING_BUDGET = parseThinkingBudget(process.env.GEMINI_THINKING_BUDGET);
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
+const GAMMA_API_KEY = process.env.GAMMA_API_KEY || "";
+const GAMMA_API_BASE_URL = (process.env.GAMMA_API_BASE_URL || "https://public-api.gamma.app/v1.0").replace(/\/+$/, "");
+const GAMMA_EXPORT_AS = normalizeGammaExport(process.env.GAMMA_EXPORT_AS || "pptx");
+const GAMMA_TEXT_MODE = normalizeGammaTextMode(process.env.GAMMA_TEXT_MODE || "generate");
+const GAMMA_THEME_ID = process.env.GAMMA_THEME_ID || "";
+const GAMMA_FOLDER_IDS = parseGammaFolderIds(process.env.GAMMA_FOLDER_IDS || process.env.GAMMA_FOLDER_ID || "");
 const ROOT = __dirname;
 
 const AI_INSTRUCTIONS =
@@ -114,6 +120,8 @@ const server = http.createServer(async (req, res) => {
         environment: process.env.NODE_ENV || "development",
         publicBaseUrl: PUBLIC_BASE_URL,
         googleDriveConfigured: Boolean(GOOGLE_DRIVE_CLIENT_ID),
+        gammaConfigured: Boolean(GAMMA_API_KEY),
+        gammaExportAs: GAMMA_EXPORT_AS,
       });
     }
 
@@ -121,6 +129,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         googleDriveClientId: GOOGLE_DRIVE_CLIENT_ID,
         publicBaseUrl: PUBLIC_BASE_URL,
+        gammaConfigured: Boolean(GAMMA_API_KEY),
+        gammaExportAs: GAMMA_EXPORT_AS,
       });
     }
 
@@ -138,6 +148,14 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/export-course-pack") {
       return handleCoursePackExport(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/gamma/generate") {
+      return handleGammaGenerate(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/gamma/generation/")) {
+      return handleGammaStatus(req, res, url.pathname);
     }
 
     if (req.method !== "GET") {
@@ -279,6 +297,95 @@ async function handleCoursePackExport(req, res) {
     mimeType: "application/zip",
     data: archive.toString("base64"),
   });
+}
+
+async function handleGammaGenerate(req, res) {
+  const body = await readJsonBody(req, 2_000_000);
+  const inputText = String(body.inputText || "").trim();
+
+  if (!inputText) {
+    return sendJson(res, 400, { error: "Missing Gamma inputText" });
+  }
+
+  if (!GAMMA_API_KEY) {
+    return sendJson(res, 503, {
+      error: "GAMMA_API_KEY is not set. Export the Gamma-ready prompt and paste it into Gamma manually for now.",
+      gammaConfigured: false,
+    });
+  }
+
+  const gammaPayload = compactObject({
+    inputText: inputText.slice(0, 400_000),
+    additionalInstructions: String(body.additionalInstructions || "").trim().slice(0, 5_000) || undefined,
+    textMode: normalizeGammaTextMode(body.textMode || GAMMA_TEXT_MODE),
+    format: "presentation",
+    numCards: normalizePositiveInteger(body.numCards),
+    cardSplit: normalizeGammaCardSplit(body.cardSplit || "auto"),
+    exportAs: normalizeGammaExport(body.exportAs || GAMMA_EXPORT_AS),
+    themeId: String(body.themeId || GAMMA_THEME_ID || "").trim() || undefined,
+    folderIds: Array.isArray(body.folderIds) && body.folderIds.length ? body.folderIds : GAMMA_FOLDER_IDS.length ? GAMMA_FOLDER_IDS : undefined,
+    textOptions: compactObject({
+      amount: body.textAmount || "auto",
+      tone: body.tone || "professional",
+      audience: body.audience || undefined,
+      language: body.language || undefined,
+    }),
+    cardOptions: compactObject({
+      dimensions: body.dimensions || "16x9",
+    }),
+  });
+
+  const payload = await gammaFetch("/generations", {
+    method: "POST",
+    body: JSON.stringify(gammaPayload),
+  });
+
+  return sendJson(res, 200, {
+    ...payload,
+    gammaConfigured: true,
+    request: {
+      format: gammaPayload.format,
+      numCards: gammaPayload.numCards || null,
+      exportAs: gammaPayload.exportAs || null,
+      textMode: gammaPayload.textMode,
+    },
+  });
+}
+
+async function handleGammaStatus(req, res, pathname) {
+  const generationId = decodeURIComponent(pathname.split("/").pop() || "").trim();
+
+  if (!generationId) {
+    return sendJson(res, 400, { error: "Missing Gamma generation id" });
+  }
+
+  if (!GAMMA_API_KEY) {
+    return sendJson(res, 503, { error: "GAMMA_API_KEY is not set.", gammaConfigured: false });
+  }
+
+  const payload = await gammaFetch(`/generations/${encodeURIComponent(generationId)}`, {
+    method: "GET",
+  });
+  return sendJson(res, 200, payload);
+}
+
+async function gammaFetch(endpoint, options = {}) {
+  const response = await fetch(`${GAMMA_API_BASE_URL}${endpoint}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": GAMMA_API_KEY,
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const detail = payload.error?.message || payload.message || payload.error || response.statusText;
+    throw new Error(`Gamma API request failed: ${detail}`);
+  }
+
+  return payload;
 }
 
 function buildCoursePackReadme({ inputs, annualPlan, slides, script }) {
@@ -1104,6 +1211,46 @@ function resolveAiProvider() {
 function normalizeProvider(value) {
   const provider = String(value || "auto").trim().toLowerCase();
   return ["auto", "openai", "gemini"].includes(provider) ? provider : "auto";
+}
+
+function normalizeGammaExport(value) {
+  const exportAs = String(value || "pptx").trim().toLowerCase();
+  return ["pptx", "pdf", "png"].includes(exportAs) ? exportAs : "pptx";
+}
+
+function normalizeGammaTextMode(value) {
+  const textMode = String(value || "generate").trim().toLowerCase();
+  return ["generate", "condense", "preserve"].includes(textMode) ? textMode : "generate";
+}
+
+function normalizeGammaCardSplit(value) {
+  const cardSplit = String(value || "auto").trim();
+  return ["auto", "inputTextBreaks"].includes(cardSplit) ? cardSplit : "auto";
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  return Math.round(number);
+}
+
+function parseGammaFolderIds(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+function compactObject(object) {
+  return Object.fromEntries(
+    Object.entries(object || {}).filter(([, value]) => {
+      if (value === undefined || value === null || value === "") return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value).length > 0;
+      return true;
+    }),
+  );
 }
 
 function normalizeThinkingLevel(value) {

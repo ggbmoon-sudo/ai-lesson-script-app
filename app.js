@@ -97,6 +97,12 @@ const state = {
     autoBackup: false,
     backups: [],
   },
+  gamma: {
+    configured: false,
+    exportAs: "pptx",
+    lastGeneration: null,
+    status: "未設定 Gamma API Key，可先匯出 Gamma-ready prompt。",
+  },
   role: "teacher",
   lastLessonInputs: null,
   budget: null,
@@ -198,6 +204,8 @@ function bindDom() {
   dom.driveStatus = document.getElementById("driveStatus");
   dom.driveSyncMeta = document.getElementById("driveSyncMeta");
   dom.driveBackupList = document.getElementById("driveBackupList");
+  dom.gammaStatus = document.getElementById("gammaStatus");
+  dom.gammaResult = document.getElementById("gammaResult");
   dom.compareBox = document.getElementById("compareBox");
   dom.aiStatus = document.getElementById("aiStatus");
 }
@@ -231,6 +239,7 @@ function bindEvents() {
   document.getElementById("exportMarkdownBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportPptxBtn").addEventListener("click", exportPptx);
   document.getElementById("exportCoursePackBtn").addEventListener("click", exportCoursePack);
+  document.getElementById("exportGammaDeckBtn").addEventListener("click", exportGammaDeck);
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
   dom.aiStatus.addEventListener("click", (event) => {
@@ -320,7 +329,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "exportGammaDeckBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -393,6 +402,12 @@ async function loadAppConfig() {
       persistDriveSettings();
       renderDrivePanel();
     }
+    state.gamma.configured = Boolean(data.gammaConfigured);
+    state.gamma.exportAs = data.gammaExportAs || "pptx";
+    state.gamma.status = state.gamma.configured
+      ? `Gamma API 已設定，將嘗試直接生成 ${state.gamma.exportAs.toUpperCase()}。`
+      : "未設定 Gamma API Key，可先匯出 Gamma-ready prompt。";
+    renderGammaPanel();
   } catch {
     // Optional local config only; the app still works if unavailable.
   }
@@ -867,6 +882,7 @@ function renderAll() {
   renderAuditLog();
   renderGovernanceMetrics();
   renderDrivePanel();
+  renderGammaPanel();
   renderStatus();
   renderAiStatus();
   applyRolePermissions();
@@ -2201,6 +2217,206 @@ async function exportCoursePack() {
   }
 }
 
+async function exportGammaDeck() {
+  if (!state.slides.length) {
+    await generateLesson();
+  }
+
+  const inputText = buildGammaDeckText();
+  const additionalInstructions = buildGammaAdditionalInstructions();
+  const filename = `${slugifyFilename((state.lastLessonInputs || getLessonInputs()).topic || "eduscript-gamma-deck")}-gamma-prompt.md`;
+
+  if (window.location.protocol === "file:") {
+    downloadFile(filename, inputText, "text/markdown;charset=utf-8");
+    state.gamma.status = "目前是 file:// 模式，已匯出 Gamma-ready prompt。";
+    renderGammaPanel();
+    dom.compareBox.textContent = "Gamma API 需要以 node server.js 開啟 APP；目前已下載可貼入 Gamma 的 prompt。";
+    return;
+  }
+
+  setAiBusy(true, "正在送出 Gamma PPT");
+  state.gamma.status = "正在送出 Gamma 生成工作...";
+  renderGammaPanel();
+
+  try {
+    const response = await fetch("/api/gamma/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inputText,
+        additionalInstructions,
+        numCards: state.slides.length || undefined,
+        exportAs: state.gamma.exportAs || "pptx",
+        audience: (state.lastLessonInputs || getLessonInputs()).audience,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 503) {
+        downloadFile(filename, inputText, "text/markdown;charset=utf-8");
+        state.gamma.configured = false;
+        state.gamma.status = "未設定 Gamma API Key，已匯出 Gamma-ready prompt。";
+        state.gamma.lastGeneration = null;
+        renderGammaPanel();
+        dom.compareBox.textContent = `${payload.error || "Gamma API Key 未設定"}\n\n已下載 ${filename}，之後可貼入 Gamma 生成 PPT。`;
+        return;
+      }
+      throw new Error(payload.error || `Gamma request failed: ${response.status}`);
+    }
+
+    const finalPayload = await pollGammaGeneration(payload);
+    state.gamma.configured = true;
+    state.gamma.lastGeneration = finalPayload;
+    state.gamma.status = buildGammaStatus(finalPayload);
+    renderGammaPanel();
+    dom.compareBox.textContent = formatGammaResult(finalPayload);
+    logAudit("匯出", `Gamma PPT 生成工作：${finalPayload.generationId || finalPayload.id || "submitted"}`);
+    persistState();
+  } catch (error) {
+    downloadFile(filename, inputText, "text/markdown;charset=utf-8");
+    state.gamma.status = `Gamma 生成失敗，已匯出 prompt：${error.message}`;
+    renderGammaPanel();
+    dom.compareBox.textContent = `Gamma 生成失敗：${error.message}\n\n已下載 ${filename}，可以先手動貼入 Gamma。`;
+  } finally {
+    setAiBusy(false);
+  }
+}
+
+async function pollGammaGeneration(initialPayload) {
+  const generationId = initialPayload.generationId || initialPayload.id;
+  if (!generationId) return initialPayload;
+
+  let latest = initialPayload;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (["completed", "failed"].includes(String(latest.status || "").toLowerCase())) {
+      return latest;
+    }
+    await wait(5000);
+    const response = await fetch(`/api/gamma/generation/${encodeURIComponent(generationId)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Gamma status failed: ${response.status}`);
+    }
+    latest = { ...latest, ...payload };
+    state.gamma.status = buildGammaStatus(latest);
+    renderGammaPanel();
+  }
+  return latest;
+}
+
+function buildGammaDeckText() {
+  const inputs = state.lastLessonInputs || getLessonInputs();
+  const annual = state.annualPlan;
+  const slides = state.slides.length ? state.slides : [];
+  const overview = [
+    `# ${inputs.topic || "EduScript lesson"} - Gamma PPT Deck Brief`,
+    "",
+    `Subject: ${inputs.subject || annual?.inputs?.moduleTitle || "N/A"}`,
+    `Audience: ${inputs.audience || annual?.inputs?.audience || "N/A"}`,
+    `Duration: ${inputs.duration || "N/A"} minutes`,
+    `Objective: ${inputs.objective || "N/A"}`,
+    "",
+    "Create one presentation card per section below. Use the slide prompt as the source of truth for visual layout, visible content, checkpoints, and teaching flow.",
+  ];
+
+  if (annual?.metrics) {
+    overview.push(
+      "",
+      "## Academic-Year Context",
+      `Lecture hours: ${annual.metrics.lectureHours}`,
+      `CA Lab hours: ${annual.metrics.labHours}`,
+      `Assessment hours: ${annual.metrics.assessmentHours}`,
+      `PPT slides planned: ${annual.metrics.pptSlides}`,
+    );
+  }
+
+  const slideText = slides.map((slide, index) => {
+    return [
+      "",
+      "---",
+      "",
+      `## Card ${index + 1}: ${slide.title || `Slide ${index + 1}`}`,
+      `Timing: ${slide.minutes || ""} minutes`,
+      `Teaching event: ${slide.event || ""}`,
+      `Bloom level: ${slide.bloom || ""}`,
+      "",
+      "### Visible Content And Layout Prompt",
+      slide.notes || slide.activity || "",
+      "",
+      "### Teacher Checkpoint",
+      slide.activity || "Add one quick concept check question.",
+    ].join("\n");
+  });
+
+  if (state.script) {
+    slideText.push(
+      "",
+      "---",
+      "",
+      "## Speaker Notes Reference",
+      "Use this only as teaching-note context. Do not place all script text on slides.",
+      state.script.slice(0, 12000),
+    );
+  }
+
+  return [...overview, ...slideText].join("\n");
+}
+
+function buildGammaAdditionalInstructions() {
+  return [
+    "Generate a polished 16:9 professional teaching presentation in Traditional Chinese.",
+    "Preserve one card per Card section when possible.",
+    "Keep slide text concise, but make diagrams/checklists/demos clear enough for students to follow.",
+    "Use cloud, Linux terminal, YAML, Kubernetes architecture, lab evidence, and assessment visuals where relevant.",
+    "Return an export file if exportAs is enabled.",
+  ].join(" ");
+}
+
+function buildGammaStatus(payload) {
+  const status = String(payload.status || "submitted");
+  const exportUrl = payload.exportUrl || "";
+  const gammaUrl = payload.gammaUrl || payload.url || "";
+  if (status === "completed" && (exportUrl || gammaUrl)) {
+    return `Gamma 已完成：${exportUrl ? "PPTX/PDF 匯出連結已生成" : "Gamma 文件已生成"}。`;
+  }
+  if (status === "failed") return "Gamma 生成失敗，請查看下方錯誤。";
+  return `Gamma 生成工作已送出：${status}`;
+}
+
+function formatGammaResult(payload) {
+  const lines = [
+    "Gamma PPT 生成結果",
+    `Generation ID: ${payload.generationId || payload.id || "N/A"}`,
+    `Status: ${payload.status || "submitted"}`,
+  ];
+  if (payload.gammaUrl || payload.url) lines.push(`Gamma URL: ${payload.gammaUrl || payload.url}`);
+  if (payload.exportUrl) lines.push(`Export URL: ${payload.exportUrl}`);
+  if (payload.credits) {
+    lines.push(`Credits: deducted ${payload.credits.deducted ?? "?"}, remaining ${payload.credits.remaining ?? "?"}`);
+  }
+  if (!payload.exportUrl && !payload.gammaUrl && payload.status !== "completed") {
+    lines.push("Gamma 仍在處理中；稍後可用 Generation ID 查狀態。");
+  }
+  return lines.join("\n");
+}
+
+function renderGammaPanel() {
+  if (!dom.gammaStatus) return;
+  dom.gammaStatus.textContent = state.gamma.status || "未設定 Gamma API Key，可先匯出 Gamma-ready prompt。";
+  dom.gammaStatus.classList.toggle("strong", Boolean(state.gamma.configured));
+  dom.gammaStatus.classList.toggle("error", !state.gamma.configured);
+  if (dom.gammaResult) {
+    dom.gammaResult.textContent = state.gamma.lastGeneration
+      ? formatGammaResult(state.gamma.lastGeneration)
+      : "按「Gamma PPT」會先使用目前每頁 PPT Prompt 建立 Gamma deck brief；未設定 API Key 時會下載 Markdown prompt。";
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function copyPrompt() {
   const prompt = buildPrompt();
   try {
@@ -2237,6 +2453,7 @@ function buildProjectPayload(source = "manual") {
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
     qaMetrics: state.qaMetrics,
+    gamma: state.gamma,
     role: state.role,
   };
 }
@@ -2272,6 +2489,7 @@ function applyProjectPayload(payload, sourceLabel = "備份") {
     helpful: 0,
     needsTeacher: 0,
   };
+  state.gamma.lastGeneration = payload.gamma?.lastGeneration || state.gamma.lastGeneration;
   state.role = payload.role || state.role || "teacher";
   state.lastLessonInputs = payload.inputs || payload.lastLessonInputs || state.lastLessonInputs || getLessonInputs();
 
@@ -3240,6 +3458,7 @@ function restoreState() {
     state.publishedRevision = payload.publishedRevision || null;
     state.studentQa = payload.studentQa || state.studentQa;
     state.qaMetrics = payload.qaMetrics || state.qaMetrics;
+    state.gamma.lastGeneration = payload.gamma?.lastGeneration || state.gamma.lastGeneration;
     state.role = payload.role || "teacher";
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);

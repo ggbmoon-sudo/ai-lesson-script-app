@@ -203,3 +203,17 @@ APP 使用 Google Identity Services 取得使用者授權，並以 Drive API `dr
 - 增強 PPTX 匯出：主題模板、講者備註、圖片、圖表與動畫。
 - 增加 LMS 整合，例如 Canvas、Google Classroom 或 Moodle。
 - 增加教師審核紀錄與 AI 生成透明度標記。
+
+## Gamma PPT Connector
+
+The app now includes a Gamma PPT connector for future direct deck generation. The frontend sends the current per-slide PPT prompts to the local `server.js` proxy, and the API key stays in environment variables only.
+
+```text
+GAMMA_API_KEY=your_gamma_api_key_here
+GAMMA_EXPORT_AS=pptx
+GAMMA_TEXT_MODE=generate
+GAMMA_THEME_ID=
+GAMMA_FOLDER_IDS=
+```
+
+If `GAMMA_API_KEY` is empty, the `Gamma PPT` button downloads a Gamma-ready Markdown prompt instead. You can paste that prompt into Gamma manually now, then add a Gamma Pro/Ultra/Teams/Business API key later to generate through `POST /api/gamma/generate`.

@@ -1068,6 +1068,11 @@ legend {
   grid-column: span 2;
 }
 
+.export-tile.gamma-tile {
+  border-color: rgba(84, 88, 188, 0.32);
+  background: #f3f4ff;
+}
+
 .export-tile strong,
 .export-tile span {
   display: block;
@@ -1103,6 +1108,22 @@ legend {
   border-radius: 8px;
   background: #f7fbfb;
   padding: 14px;
+}
+
+.gamma-box {
+  background: #fbfbff;
+}
+
+.gamma-result {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--muted);
+  line-height: 1.55;
+  margin-top: 10px;
+  min-height: 76px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
 }
 
 .cloud-form {
