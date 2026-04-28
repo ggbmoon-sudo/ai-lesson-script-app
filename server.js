@@ -8,11 +8,17 @@ loadEnvFile(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
-const MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
+const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "auto");
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
 const ROOT = __dirname;
+
+const AI_INSTRUCTIONS =
+  "You are an expert teaching-material assistant. Return only valid JSON that matches the requested schema. Write in Traditional Chinese unless the source content asks otherwise.";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -91,10 +97,17 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/api/health") {
+      const provider = resolveAiProvider();
       return sendJson(res, 200, {
         ok: true,
-        aiEnabled: Boolean(OPENAI_API_KEY),
-        model: MODEL,
+        aiEnabled: Boolean(provider),
+        configuredProvider: AI_PROVIDER,
+        provider: provider?.name || "local",
+        model: provider?.model || "",
+        availableProviders: {
+          openai: Boolean(OPENAI_API_KEY),
+          gemini: Boolean(GEMINI_API_KEY),
+        },
         environment: process.env.NODE_ENV || "development",
         publicBaseUrl: PUBLIC_BASE_URL,
         googleDriveConfigured: Boolean(GOOGLE_DRIVE_CLIENT_ID),
@@ -131,15 +144,17 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  const mode = OPENAI_API_KEY ? `AI enabled (${MODEL})` : "local fallback only";
+  const provider = resolveAiProvider();
+  const mode = provider ? `AI enabled (${provider.name}: ${provider.model})` : "local fallback only";
   const url = PUBLIC_BASE_URL || `http://localhost:${PORT}`;
   console.log(`EduScript AI Studio running at ${url} - ${mode}`);
 });
 
 async function handleAiRequest(req, res, pathname) {
-  if (!OPENAI_API_KEY) {
+  const provider = resolveAiProvider();
+  if (!provider) {
     return sendJson(res, 503, {
-      error: "OPENAI_API_KEY is not set. The frontend will use local fallback generation.",
+      error: "No AI provider key is set. Add OPENAI_API_KEY or GEMINI_API_KEY, or use the frontend local fallback generation.",
     });
   }
 
@@ -147,6 +162,7 @@ async function handleAiRequest(req, res, pathname) {
 
   if (pathname === "/api/ai/lesson") {
     const result = await createStructuredResponse({
+      provider,
       schemaName: "lesson_plan",
       schema: lessonSchema,
       input: buildLessonPrompt(body),
@@ -156,6 +172,7 @@ async function handleAiRequest(req, res, pathname) {
 
   if (pathname === "/api/ai/script") {
     const result = await createStructuredResponse({
+      provider,
       schemaName: "lesson_script",
       schema: scriptSchema,
       input: buildScriptPrompt(body),
@@ -165,6 +182,7 @@ async function handleAiRequest(req, res, pathname) {
 
   if (pathname === "/api/ai/assistant") {
     const result = await createStructuredResponse({
+      provider,
       schemaName: "classroom_assistant",
       schema: assistantSchema,
       input: buildAssistantPrompt(body),
@@ -657,7 +675,15 @@ function themeXml() {
 }
 
 
-async function createStructuredResponse({ schemaName, schema, input }) {
+async function createStructuredResponse({ provider, schemaName, schema, input }) {
+  if (provider.name === "gemini") {
+    return createGeminiStructuredResponse({ schema, input });
+  }
+
+  return createOpenAiStructuredResponse({ schemaName, schema, input });
+}
+
+async function createOpenAiStructuredResponse({ schemaName, schema, input }) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -665,9 +691,8 @@ async function createStructuredResponse({ schemaName, schema, input }) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: MODEL,
-      instructions:
-        "你是資深教學設計師與教育科技產品 AI。請用繁體中文回答，內容要可直接給教師使用，避免空泛形容詞。",
+      model: OPENAI_MODEL,
+      instructions: AI_INSTRUCTIONS,
       input,
       text: {
         format: {
@@ -692,7 +717,48 @@ async function createStructuredResponse({ schemaName, schema, input }) {
     throw new Error("OpenAI response did not include output_text.");
   }
 
-  return JSON.parse(text);
+  return parseStructuredJson(text, "OpenAI");
+}
+
+async function createGeminiStructuredResponse({ schema, input }) {
+  const modelPath = GEMINI_MODEL.startsWith("models/") ? GEMINI_MODEL.slice("models/".length) : GEMINI_MODEL;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelPath)}:generateContent`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": GEMINI_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: AI_INSTRUCTIONS }],
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: input }],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseJsonSchema: toGeminiJsonSchema(schema),
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const detail = payload.error?.message || payload.error?.status || response.statusText;
+    throw new Error(`Gemini request failed: ${detail}`);
+  }
+
+  const text = extractGeminiText(payload);
+  if (!text) {
+    throw new Error("Gemini response did not include candidate text.");
+  }
+
+  return parseStructuredJson(text, "Gemini");
 }
 
 function buildLessonPrompt({ inputs }) {
@@ -760,6 +826,94 @@ function extractOutputText(payload) {
     }
   }
   return chunks.join("\n");
+}
+
+function extractGeminiText(payload) {
+  const chunks = [];
+  for (const candidate of payload.candidates || []) {
+    for (const part of candidate.content?.parts || []) {
+      if (part.text) {
+        chunks.push(part.text);
+      }
+    }
+  }
+  return chunks.join("\n");
+}
+
+function parseStructuredJson(text, providerName) {
+  const trimmed = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error(`${providerName} response was not valid JSON: ${error.message}`);
+  }
+}
+
+function toGeminiJsonSchema(schema) {
+  if (Array.isArray(schema)) {
+    return schema.map(toGeminiJsonSchema);
+  }
+
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+
+  const allowedKeys = new Set([
+    "$defs",
+    "anyOf",
+    "description",
+    "enum",
+    "items",
+    "oneOf",
+    "properties",
+    "required",
+    "type",
+  ]);
+  const result = {};
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (!allowedKeys.has(key)) continue;
+
+    if (key === "properties" || key === "$defs") {
+      result[key] = Object.fromEntries(
+        Object.entries(value || {}).map(([name, childSchema]) => [name, toGeminiJsonSchema(childSchema)]),
+      );
+    } else {
+      result[key] = toGeminiJsonSchema(value);
+    }
+  }
+
+  return result;
+}
+
+function resolveAiProvider() {
+  if (AI_PROVIDER === "openai") {
+    return OPENAI_API_KEY ? { name: "openai", model: OPENAI_MODEL } : null;
+  }
+
+  if (AI_PROVIDER === "gemini") {
+    return GEMINI_API_KEY ? { name: "gemini", model: GEMINI_MODEL } : null;
+  }
+
+  if (OPENAI_API_KEY) {
+    return { name: "openai", model: OPENAI_MODEL };
+  }
+
+  if (GEMINI_API_KEY) {
+    return { name: "gemini", model: GEMINI_MODEL };
+  }
+
+  return null;
+}
+
+function normalizeProvider(value) {
+  const provider = String(value || "auto").trim().toLowerCase();
+  return ["auto", "openai", "gemini"].includes(provider) ? provider : "auto";
 }
 
 function createZip(entries) {

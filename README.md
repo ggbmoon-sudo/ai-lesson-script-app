@@ -64,6 +64,16 @@ http://localhost:4173
 GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 ```
 
+Gemini 也可作為 AI 後端。如果你沒有 OpenAI token，在 `.env` 這樣設定：
+
+```text
+AI_PROVIDER=gemini
+GEMINI_API_KEY=你的 Gemini API key
+GEMINI_MODEL=gemini-3-flash-preview
+```
+
+`AI_PROVIDER=auto` 會先用 OpenAI key；沒有 OpenAI key 時會改用 Gemini key。兩者都沒有時，APP 仍會使用本機規則生成。想用穩定版可改為 `GEMINI_MODEL=gemini-2.5-flash`；Google 官方目前列出的 3 Flash model code 是 `gemini-3-flash-preview`。
+
 ### 部署版
 
 本 repo 已加入 Render 部署設定：
@@ -75,8 +85,11 @@ GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 Render 會以 Node web service 執行 `server.js`，保留 AI proxy、PPTX 匯出、教材解析與 Google Drive 設定載入功能。部署後要在 Render 設定環境變數，不要把真實 key 提交到 GitHub：
 
 ```text
+AI_PROVIDER=auto
 OPENAI_API_KEY=你的 OpenAI key，可留空
 OPENAI_MODEL=gpt-5.2
+GEMINI_API_KEY=你的 Gemini key，可留空
+GEMINI_MODEL=gemini-3-flash-preview
 GOOGLE_DRIVE_CLIENT_ID=你的 Google OAuth Client ID
 PUBLIC_BASE_URL=https://你的服務.onrender.com
 ```

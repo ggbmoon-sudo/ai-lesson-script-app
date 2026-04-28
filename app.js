@@ -103,6 +103,7 @@ const state = {
   ai: {
     checked: false,
     enabled: false,
+    provider: "",
     model: "",
     message: "本機規則",
     busy: false,
@@ -324,6 +325,7 @@ async function checkAiHealth() {
     state.ai = {
       checked: true,
       enabled: false,
+      provider: "local",
       model: "",
       message: "本機規則",
       busy: false,
@@ -338,14 +340,16 @@ async function checkAiHealth() {
     state.ai = {
       checked: true,
       enabled: Boolean(data.aiEnabled),
+      provider: data.provider || "local",
       model: data.model || "",
-      message: data.aiEnabled ? "OpenAI 已連線" : "本機規則",
+      message: data.aiEnabled ? `${formatAiProviderName(data.provider)} 已連線` : "本機規則",
       busy: false,
     };
   } catch {
     state.ai = {
       checked: true,
       enabled: false,
+      provider: "local",
       model: "",
       message: "本機規則",
       busy: false,
@@ -639,7 +643,7 @@ async function generateLesson() {
     if (aiLesson?.slides?.length) {
       state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
-      logAudit("教材生成", `OpenAI 生成 ${state.slides.length} 頁教材草稿`);
+      logAudit("教材生成", `${formatAiProviderName(state.ai.provider)} 生成 ${state.slides.length} 頁教材草稿`);
     } else {
       generateLessonLocal(inputs);
       logAudit("教材生成", `本機規則生成 ${state.slides.length} 頁教材草稿`);
@@ -1058,7 +1062,7 @@ async function generateScript() {
         ? `\n\n【教師課前提醒】\n${aiScript.teachingNotes.map((note) => `- ${note}`).join("\n")}`
         : "";
       state.script = `${aiScript.script}${notes}`;
-      logAudit("講稿生成", `OpenAI 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
+      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成講稿`);
       renderScript();
       renderTimeBudget();
       markDriveBackupNeeded("講稿生成");
@@ -1163,7 +1167,7 @@ async function sendAssistantMessage() {
         : "";
       const nextMove = aiReply.nextMove ? `\n\n下一步：${aiReply.nextMove}` : "";
       state.messages.push({ role: "assistant", text: `${aiReply.answer}${checks}${nextMove}` });
-      logAudit("即時助理", "OpenAI 生成課堂回應");
+      logAudit("即時助理", `${formatAiProviderName(state.ai.provider)} 生成課堂回應`);
     } else {
       state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
       logAudit("即時助理", "本機規則生成課堂回應");
@@ -2136,7 +2140,7 @@ function renderAiStatus() {
   const label = state.ai.busy
     ? state.ai.message
     : state.ai.enabled
-      ? `OpenAI ${state.ai.model}`
+      ? `${formatAiProviderName(state.ai.provider)} ${state.ai.model}`
       : state.ai.message || "本機規則";
   dom.aiStatus.innerHTML = `<span>AI 模式</span><strong>${escapeHtml(label)}</strong>`;
 }
@@ -2145,12 +2149,19 @@ function setAiBusy(busy, message = "") {
   state.ai.busy = busy;
   if (message) state.ai.message = message;
   if (!busy && state.ai.enabled) {
-    state.ai.message = "OpenAI 已連線";
+    state.ai.message = `${formatAiProviderName(state.ai.provider)} 已連線`;
   }
   if (!busy && !state.ai.enabled && state.ai.checked) {
     state.ai.message = "本機規則";
   }
   renderAiStatus();
+}
+
+function formatAiProviderName(provider) {
+  const normalized = String(provider || "").toLowerCase();
+  if (normalized === "gemini") return "Gemini";
+  if (normalized === "openai") return "OpenAI";
+  return "AI";
 }
 
 function buildSlideTitle(event, topic, index) {

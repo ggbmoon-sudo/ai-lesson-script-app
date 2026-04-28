@@ -11,9 +11,15 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: AI_PROVIDER
+        value: auto
       - key: OPENAI_MODEL
         value: gpt-5.2
       - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_API_KEY
         sync: false
       - key: GOOGLE_DRIVE_CLIENT_ID
         sync: false

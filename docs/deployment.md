@@ -11,13 +11,17 @@ This app is best deployed as a Node web service, not as GitHub Pages. GitHub Pag
 5. Add environment variables in Render:
 
 ```text
+AI_PROVIDER=auto
 OPENAI_API_KEY=your_openai_key_if_you_want_server_ai
 OPENAI_MODEL=gpt-5.2
+GEMINI_API_KEY=your_gemini_key_if_you_want_server_ai
+GEMINI_MODEL=gemini-3-flash-preview
 GOOGLE_DRIVE_CLIENT_ID=your_google_oauth_client_id.apps.googleusercontent.com
 PUBLIC_BASE_URL=https://your-service-name.onrender.com
 ```
 
-`OPENAI_API_KEY` is optional. If it is empty, the frontend falls back to local rule-based generation.
+`OPENAI_API_KEY` and `GEMINI_API_KEY` are optional. Use `AI_PROVIDER=gemini` to force Gemini, `AI_PROVIDER=openai` to force OpenAI, or `AI_PROVIDER=auto` to use OpenAI first and Gemini second. If both keys are empty, the frontend falls back to local rule-based generation.
+Use `gemini-3-flash-preview` for Gemini 3 Flash, or `gemini-2.5-flash` if you prefer the stable Flash model.
 
 ## Google Drive OAuth
 
@@ -50,7 +54,8 @@ Expected response includes:
 {
   "ok": true,
   "aiEnabled": false,
-  "model": "gpt-5.2"
+  "provider": "local",
+  "model": ""
 }
 ```
 
