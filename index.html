@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EduScript AI Studio</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主要導航">
+        <div class="brand">
+          <span class="brand-mark">EA</span>
+          <div>
+            <strong>EduScript AI</strong>
+            <span>Studio</span>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="工作區">
+          <button class="nav-item active" type="button" data-view="builder">
+            <span class="nav-icon">01</span>
+            <span>教材共創</span>
+          </button>
+          <button class="nav-item" type="button" data-view="script">
+            <span class="nav-icon">02</span>
+            <span>進度講稿</span>
+          </button>
+          <button class="nav-item" type="button" data-view="assistant">
+            <span class="nav-icon">03</span>
+            <span>即時助理</span>
+          </button>
+          <button class="nav-item" type="button" data-view="library">
+            <span class="nav-icon">04</span>
+            <span>版本匯出</span>
+          </button>
+        </nav>
+
+        <div class="source-note">
+          <span>MD 分析</span>
+          <strong>4 模組 MVP</strong>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">教師備課與授課工作台</p>
+            <h1>專業 AI 教材與講稿生成 APP</h1>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" id="loadDemoBtn" type="button" aria-label="載入示範專案" title="載入示範專案">+</button>
+            <button class="action-button ghost" id="saveVersionBtn" type="button">
+              <span class="button-icon">V</span>
+              <span>儲存版本</span>
+            </button>
+            <button class="action-button" id="exportJsonBtn" type="button">
+              <span class="button-icon">↓</span>
+              <span>匯出 JSON</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="status-strip" aria-label="專案狀態">
+          <div>
+            <span>教材頁數</span>
+            <strong id="slideCount">0</strong>
+          </div>
+          <div>
+            <span>建議分鐘</span>
+            <strong id="durationStatus">45</strong>
+          </div>
+          <div>
+            <span>講稿字數</span>
+            <strong id="scriptWordStatus">0</strong>
+          </div>
+          <div>
+            <span>版本</span>
+            <strong id="versionStatus">0</strong>
+          </div>
+        </section>
+
+        <section class="view active" id="builderView" data-view-panel="builder">
+          <div class="two-column">
+            <form class="panel form-grid" id="lessonForm">
+              <div class="panel-heading">
+                <p class="eyebrow">Backward Design</p>
+                <h2>課程訪談</h2>
+              </div>
+
+              <label>
+                課題
+                <input id="topicInput" name="topic" type="text" value="光合作用與能量轉換" />
+              </label>
+
+              <div class="field-row">
+                <label>
+                  科目
+                  <input id="subjectInput" name="subject" type="text" value="高中生物" />
+                </label>
+                <label>
+                  對象
+                  <input id="audienceInput" name="audience" type="text" value="中四學生" />
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  分鐘
+                  <input id="durationInput" name="duration" type="number" min="10" max="180" value="45" />
+                </label>
+                <label>
+                  風格
+                  <select id="styleInput" name="style">
+                    <option value="清晰嚴謹">清晰嚴謹</option>
+                    <option value="生活化">生活化</option>
+                    <option value="探究式">探究式</option>
+                    <option value="考試導向">考試導向</option>
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                學習目標
+                <textarea id="objectiveInput" name="objective" rows="4">學生能解釋光反應與暗反應的角色，並分析光合作用如何連接生態系能量流。</textarea>
+              </label>
+
+              <label>
+                先備知識與班情
+                <textarea id="contextInput" name="context" rows="3">學生已學過細胞構造，但對能量轉換與反應位置仍容易混淆。</textarea>
+              </label>
+
+              <fieldset>
+                <legend>Bloom 層次</legend>
+                <div class="check-grid" id="bloomChecks">
+                  <label><input type="checkbox" value="remember" checked /> 記憶</label>
+                  <label><input type="checkbox" value="understand" checked /> 理解</label>
+                  <label><input type="checkbox" value="apply" /> 應用</label>
+                  <label><input type="checkbox" value="analyze" checked /> 分析</label>
+                  <label><input type="checkbox" value="evaluate" checked /> 評鑑</label>
+                  <label><input type="checkbox" value="create" /> 創造</label>
+                </div>
+              </fieldset>
+
+              <div class="control-bar">
+                <button class="action-button" id="generateLessonBtn" type="submit">
+                  <span class="button-icon">→</span>
+                  <span>生成教材</span>
+                </button>
+                <button class="action-button ghost" id="askQuestionsBtn" type="button">
+                  <span class="button-icon">?</span>
+                  <span>AI 提問</span>
+                </button>
+              </div>
+            </form>
+
+            <div class="stack">
+              <section class="panel">
+                <div class="panel-heading compact">
+                  <p class="eyebrow">Interview Questions</p>
+                  <h2>主動追問</h2>
+                </div>
+                <div class="question-list" id="questionList"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-heading compact">
+                  <p class="eyebrow">Bloom × Gagne</p>
+                  <h2>時間與教學事件</h2>
+                </div>
+                <div class="timeline" id="timeline"></div>
+              </section>
+            </div>
+          </div>
+
+          <section class="panel wide-panel">
+            <div class="panel-heading row-heading">
+              <div>
+                <p class="eyebrow">Editable Slides</p>
+                <h2>教材草稿</h2>
+              </div>
+              <div class="inline-controls">
+                <select id="slideSelect" aria-label="選擇投影片"></select>
+                <input id="slideFeedbackInput" type="text" placeholder="修改意見，例如：改得更生活化" />
+                <button class="icon-button" id="regenerateSlideBtn" type="button" aria-label="重生成選定投影片" title="重生成選定投影片">⟳</button>
+              </div>
+            </div>
+            <div class="slide-grid" id="slideGrid"></div>
+          </section>
+        </section>
+
+        <section class="view" id="scriptView" data-view-panel="script">
+          <div class="two-column">
+            <section class="panel form-grid">
+              <div class="panel-heading">
+                <p class="eyebrow">RAG-ready Script</p>
+                <h2>進度感知講稿</h2>
+              </div>
+
+              <label class="file-zone">
+                <span>上傳教材文字檔</span>
+                <input id="materialFileInput" type="file" accept=".txt,.md,.csv,.json" />
+              </label>
+
+              <label>
+                教材文字
+                <textarea id="materialTextInput" rows="8" placeholder="可貼上投影片文字、教材摘要或講義內容"></textarea>
+              </label>
+
+              <div class="field-row">
+                <label>
+                  從第幾頁
+                  <input id="startPageInput" type="number" min="1" value="15" />
+                </label>
+                <label>
+                  目標分鐘
+                  <input id="scriptMinutesInput" type="number" min="3" max="120" value="20" />
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  語速情境
+                  <select id="wpmProfileInput">
+                    <option value="informative">新概念解說</option>
+                    <option value="persuasive">引起動機</option>
+                    <option value="cta">作業指派</option>
+                    <option value="acoustic">大型教室</option>
+                  </select>
+                </label>
+                <label>
+                  班級節奏
+                  <select id="paceInput">
+                    <option value="balanced">平衡</option>
+                    <option value="slow">需要慢講</option>
+                    <option value="fast">可快速推進</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="control-bar">
+                <button class="action-button" id="generateScriptBtn" type="button">
+                  <span class="button-icon">→</span>
+                  <span>生成講稿</span>
+                </button>
+                <button class="action-button ghost" id="shortenScriptBtn" type="button">
+                  <span class="button-icon">−</span>
+                  <span>縮短</span>
+                </button>
+                <button class="action-button ghost" id="expandScriptBtn" type="button">
+                  <span class="button-icon">+</span>
+                  <span>加細節</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">True Time Calculation</p>
+                <h2>時間分配</h2>
+              </div>
+              <div class="time-budget" id="timeBudget"></div>
+              <div class="metric-grid">
+                <div>
+                  <span>建議 WPM</span>
+                  <strong id="wpmStatus">130</strong>
+                </div>
+                <div>
+                  <span>核心講授</span>
+                  <strong id="coreMinutesStatus">13.0 分</strong>
+                </div>
+                <div>
+                  <span>目標字數</span>
+                  <strong id="targetWordsStatus">1690</strong>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel wide-panel">
+            <div class="panel-heading row-heading">
+              <div>
+                <p class="eyebrow">Editable Script</p>
+                <h2>講稿草稿</h2>
+              </div>
+              <button class="action-button ghost" id="exportMarkdownBtn" type="button">
+                <span class="button-icon">↓</span>
+                <span>匯出 MD</span>
+              </button>
+            </div>
+            <textarea class="script-editor" id="scriptOutput" rows="18"></textarea>
+          </section>
+        </section>
+
+        <section class="view" id="assistantView" data-view-panel="assistant">
+          <div class="assistant-layout">
+            <section class="panel">
+              <div class="panel-heading">
+                <p class="eyebrow">Context-aware Assistant</p>
+                <h2>課堂即時助理</h2>
+              </div>
+              <label>
+                當前課堂脈絡
+                <textarea id="assistantContextInput" rows="7"></textarea>
+              </label>
+              <div class="quick-prompts">
+                <button type="button" data-prompt="請用三句話回答學生剛問的核心概念。">三句回答</button>
+                <button type="button" data-prompt="請幫我設計一個 3 分鐘互動問題。">互動問題</button>
+                <button type="button" data-prompt="請列出這個說法需要查核的地方。">事實查核</button>
+                <button type="button" data-prompt="請生成一題 exit ticket。">Exit Ticket</button>
+              </div>
+              <div class="assistant-input-row">
+                <input id="assistantQuestionInput" type="text" placeholder="輸入教師或學生問題" />
+                <button class="icon-button" id="sendAssistantBtn" type="button" aria-label="送出問題" title="送出問題">→</button>
+              </div>
+            </section>
+
+            <section class="panel chat-panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">Live Notes</p>
+                <h2>回應紀錄</h2>
+              </div>
+              <div class="chat-log" id="chatLog"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="libraryView" data-view-panel="library">
+          <div class="two-column">
+            <section class="panel">
+              <div class="panel-heading">
+                <p class="eyebrow">Version Control</p>
+                <h2>教材版本</h2>
+              </div>
+              <div class="version-list" id="versionList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <p class="eyebrow">Exports</p>
+                <h2>交付檔</h2>
+              </div>
+              <div class="export-grid">
+                <button class="export-tile" id="exportLessonMdBtn" type="button">
+                  <strong>教材大綱</strong>
+                  <span>Markdown</span>
+                </button>
+                <button class="export-tile" id="exportProjectJsonBtn" type="button">
+                  <strong>完整專案</strong>
+                  <span>JSON</span>
+                </button>
+                <button class="export-tile" id="copyPromptBtn" type="button">
+                  <strong>AI Prompt</strong>
+                  <span>複製</span>
+                </button>
+                <button class="export-tile" id="clearProjectBtn" type="button">
+                  <strong>重設工作台</strong>
+                  <span>Local</span>
+                </button>
+              </div>
+              <div class="compare-box" id="compareBox"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
