@@ -15,13 +15,14 @@ AI_PROVIDER=auto
 OPENAI_API_KEY=your_openai_key_if_you_want_server_ai
 OPENAI_MODEL=gpt-5.2
 GEMINI_API_KEY=your_gemini_key_if_you_want_server_ai
-GEMINI_MODEL=gemini-3-flash-preview
+GEMINI_MODEL=gemini-3-pro-preview
+GEMINI_THINKING_LEVEL=high
 GOOGLE_DRIVE_CLIENT_ID=your_google_oauth_client_id.apps.googleusercontent.com
 PUBLIC_BASE_URL=https://your-service-name.onrender.com
 ```
 
 `OPENAI_API_KEY` and `GEMINI_API_KEY` are optional. Use `AI_PROVIDER=gemini` to force Gemini, `AI_PROVIDER=openai` to force OpenAI, or `AI_PROVIDER=auto` to use OpenAI first and Gemini second. If both keys are empty, the frontend falls back to local rule-based generation.
-Use `gemini-3-flash-preview` for Gemini 3 Flash, or `gemini-2.5-flash` if you prefer the stable Flash model.
+Use `gemini-3-pro-preview` with `GEMINI_THINKING_LEVEL=high` for highest-quality lesson scripts. Use `gemini-3-flash-preview` if you prefer lower latency/cost, or `gemini-2.5-flash` with `GEMINI_THINKING_BUDGET=-1` for dynamic thinking on the 2.5 series.
 
 ## Google Drive OAuth
 

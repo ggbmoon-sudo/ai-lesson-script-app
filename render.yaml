@@ -18,7 +18,9 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-3-flash-preview
+        value: gemini-3-pro-preview
+      - key: GEMINI_THINKING_LEVEL
+        value: high
       - key: GEMINI_API_KEY
         sync: false
       - key: GOOGLE_DRIVE_CLIENT_ID

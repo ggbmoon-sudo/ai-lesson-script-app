@@ -11,8 +11,10 @@ const HOST = process.env.HOST || "0.0.0.0";
 const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "auto");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL || "high");
+const GEMINI_THINKING_BUDGET = parseThinkingBudget(process.env.GEMINI_THINKING_BUDGET);
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
 const ROOT = __dirname;
@@ -104,6 +106,7 @@ const server = http.createServer(async (req, res) => {
         configuredProvider: AI_PROVIDER,
         provider: provider?.name || "local",
         model: provider?.model || "",
+        thinking: provider?.name === "gemini" ? getGeminiThinkingStatus() : null,
         availableProviders: {
           openai: Boolean(OPENAI_API_KEY),
           gemini: Boolean(GEMINI_API_KEY),
@@ -885,10 +888,7 @@ async function createGeminiStructuredResponse({ schema, input }) {
           parts: [{ text: input }],
         },
       ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseJsonSchema: toGeminiJsonSchema(schema),
-      },
+      generationConfig: buildGeminiGenerationConfig(schema),
     }),
   });
 
@@ -1044,6 +1044,43 @@ function toGeminiJsonSchema(schema) {
   return result;
 }
 
+function buildGeminiGenerationConfig(schema) {
+  const config = {
+    responseMimeType: "application/json",
+    responseJsonSchema: toGeminiJsonSchema(schema),
+  };
+  const thinkingConfig = buildGeminiThinkingConfig();
+  if (thinkingConfig) {
+    config.thinkingConfig = thinkingConfig;
+  }
+  return config;
+}
+
+function buildGeminiThinkingConfig() {
+  const model = GEMINI_MODEL.toLowerCase();
+
+  if (model.includes("gemini-3")) {
+    return { thinkingLevel: GEMINI_THINKING_LEVEL };
+  }
+
+  if (GEMINI_THINKING_BUDGET !== null) {
+    return { thinkingBudget: GEMINI_THINKING_BUDGET };
+  }
+
+  return undefined;
+}
+
+function getGeminiThinkingStatus() {
+  const config = buildGeminiThinkingConfig();
+  if (!config) {
+    return { mode: "model-default" };
+  }
+  if (Object.hasOwn(config, "thinkingLevel")) {
+    return { mode: "thinkingLevel", value: config.thinkingLevel };
+  }
+  return { mode: "thinkingBudget", value: config.thinkingBudget };
+}
+
 function resolveAiProvider() {
   if (AI_PROVIDER === "openai") {
     return OPENAI_API_KEY ? { name: "openai", model: OPENAI_MODEL } : null;
@@ -1067,6 +1104,19 @@ function resolveAiProvider() {
 function normalizeProvider(value) {
   const provider = String(value || "auto").trim().toLowerCase();
   return ["auto", "openai", "gemini"].includes(provider) ? provider : "auto";
+}
+
+function normalizeThinkingLevel(value) {
+  const level = String(value || "high").trim().toLowerCase();
+  return ["minimal", "low", "medium", "high"].includes(level) ? level : "high";
+}
+
+function parseThinkingBudget(value) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return null;
+  }
+  const budget = Number(value);
+  return Number.isFinite(budget) ? Math.trunc(budget) : null;
 }
 
 function createZip(entries) {
