@@ -19,31 +19,35 @@
         </div>
 
         <nav class="nav-list" aria-label="工作區">
-          <button class="nav-item active" type="button" data-view="builder">
+          <button class="nav-item active" type="button" data-view="year">
             <span class="nav-icon">01</span>
+            <span>年度規劃</span>
+          </button>
+          <button class="nav-item" type="button" data-view="builder">
+            <span class="nav-icon">02</span>
             <span>教材共創</span>
           </button>
           <button class="nav-item" type="button" data-view="script">
-            <span class="nav-icon">02</span>
+            <span class="nav-icon">03</span>
             <span>進度講稿</span>
           </button>
           <button class="nav-item" type="button" data-view="assistant">
-            <span class="nav-icon">03</span>
+            <span class="nav-icon">04</span>
             <span>即時助理</span>
           </button>
           <button class="nav-item" type="button" data-view="student">
-            <span class="nav-icon">04</span>
+            <span class="nav-icon">05</span>
             <span>學生問答</span>
           </button>
           <button class="nav-item" type="button" data-view="library">
-            <span class="nav-icon">05</span>
+            <span class="nav-icon">06</span>
             <span>版本匯出</span>
           </button>
         </nav>
 
         <div class="source-note">
           <span>MD 分析</span>
-          <strong>4 模組 MVP</strong>
+          <strong>年度課程包</strong>
         </div>
       </aside>
 
@@ -110,7 +114,135 @@
           </div>
         </section>
 
-        <section class="view active" id="builderView" data-view-panel="builder">
+        <section class="view active" id="yearView" data-view-panel="year">
+          <div class="two-column">
+            <section class="panel form-grid">
+              <div class="panel-heading">
+                <p class="eyebrow">Academic Year Generator</p>
+                <h2>全年課程包規劃</h2>
+              </div>
+
+              <label>
+                課程主題
+                <input id="annualModuleInput" type="text" value="進階 Linux、Kubernetes CKA/CKAD 與雲端 EKS" />
+              </label>
+
+              <div class="field-row">
+                <label>
+                  對象
+                  <input id="annualAudienceInput" type="text" value="高級文憑 / IVE 雲端與系統管理學生" />
+                </label>
+                <label>
+                  學年週數
+                  <input id="annualWeeksInput" type="number" min="6" max="52" value="30" />
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  Lecture / 影片小時
+                  <input id="annualLectureHoursInput" type="number" min="1" max="80" step="0.5" value="13" />
+                </label>
+                <label>
+                  CA Lab 小時
+                  <input id="annualLabHoursInput" type="number" min="1" max="80" step="0.5" value="18" />
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  評核小時
+                  <input id="annualAssessmentHoursInput" type="number" min="1" max="40" step="0.5" value="6" />
+                </label>
+                <label>
+                  每小時 PPT 頁數
+                  <input id="annualSlidesPerHourInput" type="number" min="8" max="35" value="16" />
+                </label>
+              </div>
+
+              <label>
+                課程定位
+                <textarea id="annualContextInput" rows="4">接續「進階 Linux」主題，整理 CKA 與 CKAD 投影片並刪除重複部分；學生需要由 Linux VM、Ansible 自動化、Minikube、本地 CKA/CKAD 操作一路推進到 AWS Academy EKS 與 Rancher 延伸。</textarea>
+              </label>
+
+              <label>
+                Lecture / PPT 重點
+                <textarea id="annualLectureTopicsInput" rows="5">進階 Linux 銜接、Kubernetes 架構、kubectl 與 YAML、Workloads、Services / Ingress、Storage、Security / RBAC、Troubleshooting、CKA 衝刺、CKAD 衝刺、EKS、Rancher、期末 Skill Test briefing</textarea>
+              </label>
+
+              <label>
+                CA Lab Series
+                <textarea id="annualLabSpecInput" rows="6">Lab 1：Ubuntu Server VM，4GB/8GB RAM 資源規格
+Lab 2：Ansible 自動部署 Kubernetes 叢集
+Lab 3：Minikube CKA 衝刺
+Lab 4：Minikube CKAD 衝刺，修正 CKD 筆誤
+Lab 5：AWS Academy EKS
+Lab 6：Isakei 實驗；Rancher 作為 optional extension</textarea>
+              </label>
+
+              <label>
+                Assessment 規劃
+                <textarea id="annualAssessmentSpecInput" rows="5">CA：筆試與 Lab checkpoint，題庫需使用自建或 AI 生成原創題，避免未授權題庫。
+EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service endpoint 必須公開。</textarea>
+              </label>
+
+              <div class="control-bar">
+                <button class="action-button" id="generateAnnualPlanBtn" type="button">
+                  <span class="button-icon">→</span>
+                  <span>生成全年規劃</span>
+                </button>
+                <button class="action-button ghost" id="exportAnnualMdBtn" type="button">
+                  <span class="button-icon">↓</span>
+                  <span>匯出年度 MD</span>
+                </button>
+                <button class="action-button ghost" id="exportAnnualJsonBtn" type="button">
+                  <span class="button-icon">{} </span>
+                  <span>匯出年度 JSON</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">Year Overview</p>
+                <h2>小時、PPT 與評核總覽</h2>
+              </div>
+              <div class="annual-metrics" id="annualMetrics"></div>
+              <div class="annual-note" id="annualNote"></div>
+            </section>
+          </div>
+
+          <section class="panel wide-panel">
+            <div class="panel-heading row-heading">
+              <div>
+                <p class="eyebrow">Lecture & PPT</p>
+                <h2>13 小時 Lecture / PPT 生成清單</h2>
+              </div>
+              <span class="small-status" id="annualLectureStatus">尚未生成</span>
+            </div>
+            <div class="annual-list" id="annualLecturePlan"></div>
+          </section>
+
+          <div class="two-column annual-bottom">
+            <section class="panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">CA Lab Series</p>
+                <h2>6 階段實驗設計</h2>
+              </div>
+              <div class="annual-list" id="annualLabPlan"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading compact">
+                <p class="eyebrow">Assessments</p>
+                <h2>CA / EA 評核規劃</h2>
+              </div>
+              <div class="annual-list" id="annualAssessmentPlan"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="builderView" data-view-panel="builder">
           <div class="two-column">
             <form class="panel form-grid" id="lessonForm">
               <div class="panel-heading">

@@ -634,6 +634,111 @@ legend {
   gap: 10px;
 }
 
+.annual-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.annual-metrics div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 12px;
+}
+
+.annual-metrics span,
+.annual-metrics strong,
+.annual-metrics small {
+  display: block;
+}
+
+.annual-metrics span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 4px;
+}
+
+.annual-metrics strong {
+  font-size: 1.28rem;
+}
+
+.annual-metrics small {
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.annual-note {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffef9;
+  display: grid;
+  gap: 7px;
+  line-height: 1.55;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.annual-note span,
+.annual-note small {
+  color: var(--muted);
+}
+
+.small-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.annual-list {
+  display: grid;
+  gap: 10px;
+}
+
+.annual-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.annual-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.annual-card strong,
+.annual-card span,
+.annual-card small {
+  display: block;
+}
+
+.annual-card span,
+.annual-card small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.annual-card p,
+.annual-card ul {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.annual-card ul {
+  padding-left: 20px;
+}
+
+.annual-bottom {
+  margin-top: 18px;
+}
+
 .script-editor {
   min-height: 500px;
   font-size: 1rem;
@@ -1067,6 +1172,8 @@ legend {
   .check-grid,
   .slide-grid,
   .metric-grid,
+  .annual-metrics,
+  .annual-card-head,
   .governance-grid,
   .drive-backup-item,
   .drive-sync-meta,
@@ -1078,5 +1185,10 @@ legend {
 
   .sidebar {
     padding: 16px;
+  }
+
+  .annual-card-head {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

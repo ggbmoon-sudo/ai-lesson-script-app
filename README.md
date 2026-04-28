@@ -7,6 +7,7 @@
 ## 功能
 
 - 引導式課程訪談：輸入課題、科目、對象、分鐘、學習目標與班情。
+- 全年課程包：一次生成整個學年的 Lecture/PPT、影片錄製小時、CA Lab Series 與 CA/EA 評核規劃。
 - 教材生成：依 Bloom's Taxonomy 與 Gagne's Nine Events 產出可編輯投影片草稿。
 - 局部再生成：選擇單頁投影片並輸入修改意見。
 - 進度講稿：貼上或上傳教材文字，設定起始頁與分鐘，自動計算 WPM、核心講授時間與講稿。
@@ -71,6 +72,17 @@ GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 - XLSX 會抽取 workbook / worksheet 文字，適合匯入課表、週次與教學時間安排。
 - PDF 目前是基礎文字抽取；掃描圖像型 PDF 仍需要 OCR。
 - 解析後會保留頁碼/片段，講稿生成時會根據起始頁與課題關鍵字選取相關片段。
+
+### 全年課程包
+
+「年度規劃」頁可輸入整個學年的總目標，例如進階 Linux、CKA/CKAD、EKS、Rancher、CA Lab 與 Skill Test。系統會生成：
+
+- Lecture / PPT 清單：預設 13 小時影片，拆成逐 deck 錄影與 PPT 製作任務。
+- CKA / CKAD 去重策略：共用架構與 kubectl 基礎只保留一次，管理員與開發者視角分開。
+- CA Lab Series：Ubuntu VM、Ansible、Minikube CKA、Minikube CKAD、AWS Academy EKS、Isakei / Rancher。
+- Assessment：CA 筆試與 Lab checkpoint、EA Isakei 作業、no-hint Skill Test 與 public endpoint 規則。
+
+每個 Lecture deck 可按「送到 PPT 流程」，轉入「教材共創」生成可編輯投影片，再用伺服器模式匯出 PPTX。
 
 ### 發布與學生問答
 

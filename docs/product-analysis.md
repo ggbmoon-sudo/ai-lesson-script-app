@@ -98,6 +98,14 @@
 - 新增個人備份：本機 JSON 匯入/匯出，以及 Google Drive OAuth 備份、列表、還原、未備份提醒與自動備份開關。
 - 這些資料會保存在 localStorage / JSON 匯出 / Google Drive JSON 備份中，方便後續改接正式資料庫與向量服務。
 
+已在第七階段新增：
+
+- 全年課程包生成：可一次生成整個學年的 Lecture / PPT、錄影小時、CA Lab Series、CA/EA 評核規劃。
+- CKA / CKAD 整合：內建 Kubernetes lecture deck 清單與去重策略，避免重複講 kubectl、架構與 YAML 基礎。
+- Lab 設計：支援 Ubuntu Server VM、Ansible、Minikube CKA、Minikube CKAD、AWS Academy EKS、Isakei / Rancher。
+- 評核治理：CA 題庫要求原創或授權來源；EA Skill Test 支援 no-hint 與 public endpoint 驗收要求。
+- 年度 lecture 可一鍵送入單堂教材生成流程，再匯出 PPTX。
+
 未在本版本實作：
 
 - 掃描 PDF OCR

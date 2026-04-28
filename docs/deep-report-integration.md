@@ -23,6 +23,7 @@ The new report reframes the app as a teaching material operating system rather t
 | Local citation index | Published revisions build chunk IDs, source hashes, token vectors, confidence scores |
 | Role modes | Teacher / TA / Student / Admin front-end permission simulation |
 | QA metrics | Grounded rate, refusal rate, helpful feedback, and needs-teacher counts |
+| Academic year planning | Full-year Lecture/PPT, CA Lab Series, and Assessment blueprint generation |
 
 ## Still Missing
 
@@ -35,6 +36,7 @@ The new report reframes the app as a teaching material operating system rather t
 | LMS integration | No Canvas / Google Classroom / LTI workflow yet |
 | Speech path | No STT/TTS or realtime voice assistant yet |
 | Evaluation suite | Basic QA metrics exist, but no teacher gold set, red-team set, or latency tracking |
+| Bulk PPT automation | Annual plan can send one lecture deck into PPT flow, but does not yet export all decks as a ZIP |
 
 ## Suggested Next Build Order
 
@@ -43,4 +45,5 @@ The new report reframes the app as a teaching material operating system rather t
 3. Add automatic cloud backup scheduling and conflict detection for Google Drive.
 4. Add OCR provider abstraction for future Azure / Google / AWS integration.
 5. Add LMS export or import stubs.
-6. Add teacher gold-set and red-team evaluation runners.
+6. Add all-deck batch PPTX export for annual plans.
+7. Add teacher gold-set and red-team evaluation runners.

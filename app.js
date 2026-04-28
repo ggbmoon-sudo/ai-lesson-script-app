@@ -62,6 +62,7 @@ const wpmProfiles = {
 };
 
 const state = {
+  annualPlan: null,
   slides: [],
   script: "",
   questions: [],
@@ -126,6 +127,23 @@ document.addEventListener("DOMContentLoaded", async () => {
 function bindDom() {
   dom.navItems = document.querySelectorAll(".nav-item");
   dom.views = document.querySelectorAll(".view");
+  dom.annualModule = document.getElementById("annualModuleInput");
+  dom.annualAudience = document.getElementById("annualAudienceInput");
+  dom.annualWeeks = document.getElementById("annualWeeksInput");
+  dom.annualLectureHours = document.getElementById("annualLectureHoursInput");
+  dom.annualLabHours = document.getElementById("annualLabHoursInput");
+  dom.annualAssessmentHours = document.getElementById("annualAssessmentHoursInput");
+  dom.annualSlidesPerHour = document.getElementById("annualSlidesPerHourInput");
+  dom.annualContext = document.getElementById("annualContextInput");
+  dom.annualLectureTopics = document.getElementById("annualLectureTopicsInput");
+  dom.annualLabSpec = document.getElementById("annualLabSpecInput");
+  dom.annualAssessmentSpec = document.getElementById("annualAssessmentSpecInput");
+  dom.annualMetrics = document.getElementById("annualMetrics");
+  dom.annualNote = document.getElementById("annualNote");
+  dom.annualLectureStatus = document.getElementById("annualLectureStatus");
+  dom.annualLecturePlan = document.getElementById("annualLecturePlan");
+  dom.annualLabPlan = document.getElementById("annualLabPlan");
+  dom.annualAssessmentPlan = document.getElementById("annualAssessmentPlan");
   dom.lessonForm = document.getElementById("lessonForm");
   dom.topic = document.getElementById("topicInput");
   dom.subject = document.getElementById("subjectInput");
@@ -190,6 +208,9 @@ function bindEvents() {
   });
 
   document.getElementById("askQuestionsBtn").addEventListener("click", renderQuestions);
+  document.getElementById("generateAnnualPlanBtn").addEventListener("click", generateAnnualPlan);
+  document.getElementById("exportAnnualMdBtn").addEventListener("click", exportAnnualMarkdown);
+  document.getElementById("exportAnnualJsonBtn").addEventListener("click", exportAnnualJson);
   document.getElementById("regenerateSlideBtn").addEventListener("click", regenerateSelectedSlide);
   document.getElementById("loadDemoBtn").addEventListener("click", loadDemoProject);
   document.getElementById("saveVersionBtn").addEventListener("click", saveVersion);
@@ -262,6 +283,7 @@ function setRole(role) {
   state.role = role;
   if (dom.roleSelect.value !== role) dom.roleSelect.value = role;
   logAudit("角色切換", `目前角色：${roleLabel(role)}`);
+  renderAnnualPlan();
   applyRolePermissions();
   if (role === "student") switchView("student");
   persistState();
@@ -284,7 +306,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -383,6 +405,228 @@ function getLessonInputs() {
     context: clean(dom.context.value),
     bloom: selectedBloom.length ? selectedBloom : ["remember", "understand", "analyze"],
   };
+}
+
+function getAnnualInputs() {
+  return {
+    moduleTitle: clean(dom.annualModule.value) || "進階 Linux、Kubernetes CKA/CKAD 與雲端 EKS",
+    audience: clean(dom.annualAudience.value) || "高級文憑 / IVE 雲端與系統管理學生",
+    weeks: clamp(Number(dom.annualWeeks.value) || 30, 6, 52),
+    lectureHours: clamp(Number(dom.annualLectureHours.value) || 13, 1, 80),
+    labHours: clamp(Number(dom.annualLabHours.value) || 18, 1, 80),
+    assessmentHours: clamp(Number(dom.annualAssessmentHours.value) || 6, 1, 40),
+    slidesPerHour: clamp(Number(dom.annualSlidesPerHour.value) || 16, 8, 35),
+    context: clean(dom.annualContext.value),
+    lectureTopics: splitPlanItems(dom.annualLectureTopics.value),
+    labSpec: splitPlanLines(dom.annualLabSpec.value),
+    assessmentSpec: splitPlanLines(dom.annualAssessmentSpec.value),
+  };
+}
+
+function generateAnnualPlan() {
+  const inputs = getAnnualInputs();
+  state.annualPlan = buildAnnualPlan(inputs);
+  logAudit("年度規劃", `${inputs.moduleTitle} 已生成全年 Lecture / Lab / Assessment 藍圖`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("年度規劃");
+  persistState();
+}
+
+function buildAnnualPlan(inputs) {
+  const lectureCount = Math.max(1, Math.ceil(inputs.lectureHours));
+  const lectureHoursEach = inputs.lectureHours / lectureCount;
+  const labSpecs = inputs.labSpec.length ? inputs.labSpec : defaultLabSpecs();
+  const labHoursEach = inputs.labHours / labSpecs.length;
+  const lectureTopics = buildLectureTopics(inputs.lectureTopics, lectureCount);
+  const lectureUnits = lectureTopics.map((topic, index) => buildLectureUnit(topic, index, lectureCount, lectureHoursEach, inputs));
+  const labs = labSpecs.map((line, index) => buildLabUnit(line, index, labHoursEach));
+  const assessments = buildAssessmentPlan(inputs);
+  const pptSlides = lectureUnits.reduce((sum, unit) => sum + unit.pptSlides, 0);
+
+  return {
+    id: cryptoId(),
+    generatedAt: new Date().toISOString(),
+    inputs,
+    metrics: {
+      totalHours: roundOne(inputs.lectureHours + inputs.labHours + inputs.assessmentHours),
+      lectureHours: inputs.lectureHours,
+      labHours: inputs.labHours,
+      assessmentHours: inputs.assessmentHours,
+      lectureUnits: lectureUnits.length,
+      pptSlides,
+      labCount: labs.length,
+      assessmentCount: assessments.length,
+      recordingHours: inputs.lectureHours,
+    },
+    pptConsolidation: [
+      "CKA 與 CKAD 共用的 Kubernetes 架構、kubectl 基礎、YAML 結構只保留一次。",
+      "CKA 重點放在 cluster admin、networking、storage、troubleshooting；CKAD 重點放在 workload、config、probes、jobs。",
+      "每 1 小時 lecture 拆成 1 個錄影 batch 與 1 份 PPT deck，方便重錄與後期剪輯。",
+    ],
+    lectureUnits,
+    labs,
+    assessments,
+    complianceNotes: [
+      "CA 筆試題目應使用教師自建、公開授權或 AI 生成後人工審核的原創題；避免使用未授權題庫。",
+      "EA Skill Test 保持 no hint；所有 API / Service endpoint 必須 public，並在 rubric 中列明驗收方法。",
+      "所有 AI 生成教材需保留教師審核紀錄與版本備份。",
+    ],
+  };
+}
+
+function buildLectureTopics(customTopics, count) {
+  const defaults = [
+    "進階 Linux 銜接：systemd、networking、package、logs",
+    "Container runtime、OCI、image 與 registry 基礎",
+    "Kubernetes architecture：control plane、node、etcd、scheduler",
+    "kubectl、YAML、namespace 與 cluster context",
+    "Workloads：Pod、Deployment、ReplicaSet、Job、CronJob",
+    "Service、Ingress、DNS 與 NetworkPolicy",
+    "ConfigMap、Secret、Volume、PV/PVC 與 StorageClass",
+    "Security：RBAC、ServiceAccount、SecurityContext",
+    "Troubleshooting：logs、events、describe、resource pressure",
+    "CKA 衝刺：cluster admin、upgrade、backup、networking drill",
+    "CKAD 衝刺：application design、probes、config、observability",
+    "AWS Academy EKS：managed control plane、node group、IAM integration",
+    "Isakei、Rancher 與期末 Skill Test briefing",
+  ];
+  const source = customTopics.length ? customTopics : defaults;
+  return Array.from({ length: count }, (_, index) => source[index] || defaults[index % defaults.length]);
+}
+
+function buildLectureUnit(topic, index, count, hours, inputs) {
+  const week = Math.max(1, Math.round(((index + 1) / count) * inputs.weeks));
+  const pptSlides = Math.max(10, Math.round(hours * inputs.slidesPerHour));
+  const focus = inferLectureFocus(topic);
+  return {
+    id: `L${index + 1}`,
+    number: index + 1,
+    week,
+    title: topic,
+    hours: roundOne(hours),
+    videoMinutes: Math.round(hours * 60),
+    pptSlides,
+    deckName: `Deck ${index + 1}: ${topic}`,
+    focus,
+    outcomes: [
+      `學生能說明 ${focus.core} 的用途與限制。`,
+      `學生能以 kubectl / YAML 完成一個可驗收的 ${focus.task} 任務。`,
+      "學生能分辨 CKA 管理員視角與 CKAD 開發者視角的差異。",
+    ],
+    pptFocus: [
+      "概念模型與指令流程",
+      "CLI demo checkpoint",
+      "常見錯誤與 troubleshooting cue",
+      "CKA/CKAD 對應題型",
+    ],
+    recordingCue: `${Math.round(hours * 60)} 分鐘影片，建議拆成 3 段：概念、demo、exam drill。`,
+    duplicateCleanup: "若與前一 deck 重複，只保留 exam angle、demo 差異與 troubleshooting 變體。",
+  };
+}
+
+function inferLectureFocus(topic) {
+  const lower = topic.toLowerCase();
+  if (lower.includes("ckad")) return { core: "CKAD application workload", task: "workload deployment" };
+  if (lower.includes("cka")) return { core: "CKA cluster administration", task: "cluster operation" };
+  if (lower.includes("eks") || lower.includes("aws")) return { core: "EKS managed Kubernetes", task: "cloud cluster" };
+  if (lower.includes("rancher")) return { core: "Rancher enterprise management", task: "multi-cluster operation" };
+  if (lower.includes("linux")) return { core: "advanced Linux operation", task: "server preparation" };
+  if (lower.includes("security") || lower.includes("rbac")) return { core: "Kubernetes security control", task: "RBAC policy" };
+  if (lower.includes("service") || lower.includes("ingress")) return { core: "Kubernetes networking", task: "public service exposure" };
+  return { core: "Kubernetes core concept", task: "hands-on Kubernetes" };
+}
+
+function buildLabUnit(line, index, hours) {
+  const title = line.replace(/^Lab\s*\d+\s*[：:]\s*/i, "").trim() || `Lab ${index + 1}`;
+  const lower = title.toLowerCase();
+  const lab = {
+    id: `Lab ${index + 1}`,
+    number: index + 1,
+    title,
+    hours: roundOne(hours),
+    environment: "Local VM / Minikube",
+    deliverables: ["實驗記錄", "截圖證據", "Git / YAML artifact", "短答反思"],
+    rubric: ["可重現", "指令與 YAML 正確", "故障排查合理", "安全與資源設定清楚"],
+  };
+
+  if (lower.includes("ubuntu") || lower.includes("vm")) {
+    lab.environment = "Ubuntu Server VM，4GB RAM minimum，8GB RAM preferred";
+    lab.outcome = "學生完成 VM、SSH、套件、網絡與 baseline hardening。";
+  } else if (lower.includes("ansible")) {
+    lab.environment = "Ubuntu controller + target nodes";
+    lab.outcome = "學生研究並提交 Ansible playbook，自動部署 Kubernetes prerequisites / cluster。";
+  } else if (lower.includes("minikube") && (lower.includes("ckad") || lower.includes("ckd"))) {
+    lab.environment = "Minikube + kubectl + YAML";
+    lab.outcome = "學生完成 CKAD workload、config、probe、job、resource request/limit drill。";
+  } else if (lower.includes("minikube") && lower.includes("cka")) {
+    lab.environment = "Minikube single-node cluster";
+    lab.outcome = "學生完成 CKA 類型的 cluster admin、troubleshooting、service exposure drill。";
+  } else if (lower.includes("eks") || lower.includes("aws")) {
+    lab.environment = "AWS Academy / EKS";
+    lab.outcome = "學生完成 EKS cluster walkthrough、node group、IAM 與 public endpoint 驗收。";
+  } else if (lower.includes("rancher") || lower.includes("isakei")) {
+    lab.environment = "Isakei environment + optional Rancher";
+    lab.outcome = "學生完成 Isakei 作業基線，延伸比較 Rancher enterprise Kubernetes management。";
+  } else {
+    lab.outcome = "學生完成可驗收的 Kubernetes hands-on artifact。";
+  }
+  return lab;
+}
+
+function buildAssessmentPlan(inputs) {
+  const caHours = roundOne(inputs.assessmentHours * 0.45);
+  const eaHours = roundOne(inputs.assessmentHours * 0.55);
+  return [
+    {
+      type: "CA",
+      title: "Continuous Assessment：筆試 + Lab checkpoint",
+      hours: caHours,
+      weight: "建議 40%",
+      deliverables: ["短測 / quiz", "Lab evidence pack", "YAML / command log", "oral check 或 reflection"],
+      rules: ["題目需為原創或授權來源", "AI 生成題需教師審核答案與難度", "Lab checkpoint 必須可重現"],
+    },
+    {
+      type: "EA",
+      title: "End Assessment：#Cyrus Isakei 作業",
+      hours: roundOne(eaHours / 2),
+      weight: "建議 30%",
+      deliverables: ["Isakei artifact", "部署說明", "公開 endpoint", "測試證據"],
+      rules: ["由 #Cyrus 負責作業規格", "需列明 public endpoint 驗收 URL", "提交版本需有 timestamp"],
+    },
+    {
+      type: "EA",
+      title: "End Assessment：No-hint Skill Test",
+      hours: roundOne(eaHours / 2),
+      weight: "建議 30%",
+      deliverables: ["現場技能操作", "public API / service endpoint", "故障排查記錄"],
+      rules: ["no hint", "endpoint must be public", "rubric 預先公開但測試題不提示"],
+    },
+  ];
+}
+
+function defaultLabSpecs() {
+  return [
+    "Lab 1：Ubuntu Server VM，4GB/8GB RAM 資源規格",
+    "Lab 2：Ansible 自動部署 Kubernetes 叢集",
+    "Lab 3：Minikube CKA 衝刺",
+    "Lab 4：Minikube CKAD 衝刺，修正 CKD 筆誤",
+    "Lab 5：AWS Academy EKS",
+    "Lab 6：Isakei 實驗；Rancher optional extension",
+  ];
+}
+
+function splitPlanLines(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((item) => clean(item))
+    .filter(Boolean);
+}
+
+function splitPlanItems(value) {
+  return String(value || "")
+    .split(/\r?\n|、|；|;/)
+    .map((item) => clean(item))
+    .filter(Boolean);
 }
 
 async function generateLesson() {
@@ -507,6 +751,7 @@ function renderQuestions() {
 }
 
 function renderAll() {
+  renderAnnualPlan();
   renderTimeline();
   renderSlides();
   renderTimeBudget();
@@ -520,6 +765,115 @@ function renderAll() {
   renderStatus();
   renderAiStatus();
   applyRolePermissions();
+}
+
+function renderAnnualPlan() {
+  if (!dom.annualMetrics) return;
+  const plan = state.annualPlan;
+  if (!plan) {
+    dom.annualMetrics.innerHTML = emptyText("按「生成全年規劃」建立 Lecture、Lab 與評核藍圖");
+    dom.annualNote.textContent = "建議先確認 lecture 小時、Lab 小時與評核小時，再生成全年課程包。";
+    dom.annualLectureStatus.textContent = "尚未生成";
+    dom.annualLecturePlan.innerHTML = emptyText("尚未生成 Lecture / PPT 清單");
+    dom.annualLabPlan.innerHTML = emptyText("尚未生成 CA Lab Series");
+    dom.annualAssessmentPlan.innerHTML = emptyText("尚未生成 Assessment 規劃");
+    return;
+  }
+
+  const metrics = plan.metrics;
+  dom.annualMetrics.innerHTML = [
+    annualMetric("總小時", `${metrics.totalHours}h`, "Lecture + Lab + Assessment"),
+    annualMetric("Lecture", `${metrics.lectureHours}h`, `${metrics.lectureUnits} 個錄影 / PPT batch`),
+    annualMetric("PPT 頁數", `${metrics.pptSlides}`, "估算，可按每小時頁數調整"),
+    annualMetric("CA Lab", `${metrics.labCount}`, `${metrics.labHours}h hands-on`),
+    annualMetric("Assessments", `${metrics.assessmentCount}`, `${metrics.assessmentHours}h planning / testing`),
+    annualMetric("影片錄製", `${metrics.recordingHours}h`, "建議逐 deck 錄製"),
+  ].join("");
+
+  dom.annualNote.innerHTML = `
+    <strong>${escapeHtml(plan.inputs.moduleTitle)}</strong>
+    <span>${escapeHtml(plan.inputs.context || "全年課程包已建立。")}</span>
+    <small>${escapeHtml(plan.pptConsolidation.join(" "))}</small>
+  `;
+  dom.annualLectureStatus.textContent = `${metrics.lectureUnits} decks / ${metrics.recordingHours}h video`;
+  const canEditAnnual = ["teacher", "admin"].includes(state.role);
+
+  dom.annualLecturePlan.innerHTML = plan.lectureUnits.map((unit, index) => `
+    <article class="annual-card">
+      <div class="annual-card-head">
+        <div>
+          <span>${escapeHtml(unit.id)}｜Week ${unit.week}｜${unit.hours}h｜${unit.pptSlides} slides</span>
+          <strong>${escapeHtml(unit.title)}</strong>
+        </div>
+        <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT 流程</button>
+      </div>
+      <p>${escapeHtml(unit.recordingCue)}</p>
+      <ul>${unit.outcomes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      <small>${escapeHtml(unit.duplicateCleanup)}</small>
+    </article>
+  `).join("");
+
+  dom.annualLabPlan.innerHTML = plan.labs.map((lab) => `
+    <article class="annual-card">
+      <div class="annual-card-head">
+        <div>
+          <span>${escapeHtml(lab.id)}｜${lab.hours}h｜${escapeHtml(lab.environment)}</span>
+          <strong>${escapeHtml(lab.title)}</strong>
+        </div>
+      </div>
+      <p>${escapeHtml(lab.outcome)}</p>
+      <small>交付：${escapeHtml(lab.deliverables.join("、"))}</small>
+    </article>
+  `).join("");
+
+  dom.annualAssessmentPlan.innerHTML = plan.assessments.map((assessment) => `
+    <article class="annual-card">
+      <div class="annual-card-head">
+        <div>
+          <span>${escapeHtml(assessment.type)}｜${assessment.hours}h｜${escapeHtml(assessment.weight)}</span>
+          <strong>${escapeHtml(assessment.title)}</strong>
+        </div>
+      </div>
+      <p>交付：${escapeHtml(assessment.deliverables.join("、"))}</p>
+      <small>${escapeHtml(assessment.rules.join("；"))}</small>
+    </article>
+  `).join("");
+
+  dom.annualLecturePlan.querySelectorAll("[data-annual-lecture]").forEach((button) => {
+    button.addEventListener("click", () => sendAnnualLectureToBuilder(Number(button.dataset.annualLecture)));
+  });
+}
+
+function annualMetric(label, value, hint) {
+  return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`;
+}
+
+async function sendAnnualLectureToBuilder(index) {
+  const unit = state.annualPlan?.lectureUnits?.[index];
+  if (!unit) return;
+  const inputs = {
+    topic: unit.title,
+    subject: state.annualPlan.inputs.moduleTitle,
+    audience: state.annualPlan.inputs.audience,
+    duration: clamp(unit.videoMinutes, 10, 180),
+    style: "考試導向",
+    objective: unit.outcomes.join("；"),
+    context: [
+      state.annualPlan.inputs.context,
+      `PPT deck：${unit.deckName}`,
+      `PPT focus：${unit.pptFocus.join("、")}`,
+      `Duplicate cleanup：${unit.duplicateCleanup}`,
+    ].filter(Boolean).join("\n"),
+    bloom: ["understand", "apply", "analyze", "evaluate"],
+  };
+
+  setFormInputs(inputs);
+  dom.scriptMinutes.value = String(Math.max(10, Math.round(unit.videoMinutes)));
+  switchView("builder");
+  await generateLesson();
+  logAudit("年度規劃", `${unit.id} 已送到教材共創 / PPT 流程`);
+  markDriveBackupNeeded("年度 lecture 轉 PPT");
+  persistState();
 }
 
 function renderTimeline() {
@@ -1231,6 +1585,20 @@ function exportProjectJson() {
   downloadFile("eduscript-ai-project.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
 }
 
+function exportAnnualJson() {
+  if (!state.annualPlan) generateAnnualPlan();
+  logAudit("匯出", "全年課程包匯出為 JSON");
+  persistState();
+  downloadFile("eduscript-ai-year-plan.json", JSON.stringify(state.annualPlan, null, 2), "application/json;charset=utf-8");
+}
+
+function exportAnnualMarkdown() {
+  if (!state.annualPlan) generateAnnualPlan();
+  logAudit("匯出", "全年課程包匯出為 Markdown");
+  persistState();
+  downloadFile("eduscript-ai-year-plan.md", buildAnnualMarkdown(state.annualPlan), "text/markdown;charset=utf-8");
+}
+
 async function importProjectJson(event) {
   const file = event.target.files?.[0];
   event.target.value = "";
@@ -1303,11 +1671,12 @@ function buildProjectPayload(source = "manual") {
   const inputs = state.lastLessonInputs || getLessonInputs();
   return {
     schema: "eduscript-ai-project",
-    schemaVersion: 2,
+    schemaVersion: 3,
     app: "EduScript AI Studio",
     source,
     exportedAt: new Date().toISOString(),
     backupLabel: `${inputs.topic || "未命名教材"}｜${inputs.subject || "未分類"}`,
+    annualPlan: state.annualPlan,
     inputs,
     slides: state.slides,
     questions: state.questions,
@@ -1334,6 +1703,7 @@ function applyProjectPayload(payload, sourceLabel = "備份") {
     throw new Error("找不到教材內容");
   }
 
+  state.annualPlan = payload.annualPlan || null;
   state.slides = payload.slides || [];
   state.script = payload.script || "";
   state.questions = payload.questions || [];
@@ -1706,6 +2076,7 @@ function clearProject() {
   if (!ok) return;
   localStorage.removeItem(STORAGE_KEY);
   state.slides = [];
+  state.annualPlan = null;
   state.script = "";
   state.questions = [];
   state.materialPages = [];
@@ -2080,6 +2451,71 @@ ${audit || "尚未有生成紀錄"}
 `;
 }
 
+function buildAnnualMarkdown(plan) {
+  if (!plan) return "# 全年課程包\n\n尚未生成年度規劃。\n";
+  const metrics = plan.metrics;
+  const lectures = plan.lectureUnits.map((unit) => `### ${unit.id}. ${unit.title}
+
+- Week：${unit.week}
+- Lecture / video：${unit.hours} 小時（${unit.videoMinutes} 分鐘）
+- PPT：${unit.pptSlides} 頁，${unit.deckName}
+- Recording cue：${unit.recordingCue}
+- Learning outcomes：
+${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
+- PPT focus：${unit.pptFocus.join("、")}
+- Dedup：${unit.duplicateCleanup}`).join("\n\n");
+
+  const labs = plan.labs.map((lab) => `### ${lab.id}. ${lab.title}
+
+- 小時：${lab.hours}
+- 環境：${lab.environment}
+- 產出：${lab.outcome}
+- 交付：${lab.deliverables.join("、")}
+- Rubric：${lab.rubric.join("、")}`).join("\n\n");
+
+  const assessments = plan.assessments.map((item) => `### ${item.type}. ${item.title}
+
+- 小時：${item.hours}
+- 權重：${item.weight}
+- 交付：${item.deliverables.join("、")}
+- 規則：${item.rules.join("；")}`).join("\n\n");
+
+  return `# ${plan.inputs.moduleTitle}
+
+生成時間：${new Date(plan.generatedAt).toLocaleString("zh-Hant")}
+對象：${plan.inputs.audience}
+學年週數：${plan.inputs.weeks}
+
+## 小時與交付總覽
+
+- 總小時：${metrics.totalHours}
+- Lecture / video：${metrics.lectureHours} 小時，${metrics.lectureUnits} 個 PPT / recording batch
+- 預估 PPT：${metrics.pptSlides} 頁
+- CA Lab：${metrics.labHours} 小時，${metrics.labCount} 個 lab
+- Assessment：${metrics.assessmentHours} 小時，${metrics.assessmentCount} 個評核項
+
+## PPT 去重策略
+
+${plan.pptConsolidation.map((item) => `- ${item}`).join("\n")}
+
+## Lecture & PPT
+
+${lectures}
+
+## CA Lab Series
+
+${labs}
+
+## Assessments
+
+${assessments}
+
+## 合規與品質提醒
+
+${plan.complianceNotes.map((item) => `- ${item}`).join("\n")}
+`;
+}
+
 function buildPrompt() {
   const inputs = state.lastLessonInputs || getLessonInputs();
   return [
@@ -2109,6 +2545,7 @@ function setFormInputs(inputs) {
 
 function persistState() {
   const payload = {
+    annualPlan: state.annualPlan,
     slides: state.slides,
     script: state.script,
     questions: state.questions,
@@ -2134,6 +2571,7 @@ function restoreState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const payload = JSON.parse(raw);
+    state.annualPlan = payload.annualPlan || null;
     state.slides = payload.slides || [];
     state.script = payload.script || "";
     state.questions = payload.questions || [];
@@ -2229,6 +2667,10 @@ function clamp(value, min, max) {
 
 function formatNumber(value) {
   return Number(value).toFixed(value % 1 === 0 ? 0 : 1);
+}
+
+function roundOne(value) {
+  return Math.round(Number(value || 0) * 10) / 10;
 }
 
 function emptyText(text) {
