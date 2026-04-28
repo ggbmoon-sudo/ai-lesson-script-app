@@ -19,6 +19,7 @@
 - 角色模式：支援教師、助教、學生、管理者的前端權限模擬。
 - 本機 citation index：發布時建立 chunk id、source hash、搜尋向量與 confidence。
 - 治理指標：顯示發布狀態、citation chunk 數、QA 有據率、拒答率與需老師介入次數。
+- 個人備份：支援本機 JSON 匯入/匯出，以及 Google Drive 雲端備份與還原。
 - 匯出：支援 Markdown、JSON 與伺服器模式 PPTX。
 - AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
@@ -88,6 +89,18 @@ http://localhost:4173
 
 學生提問時會用關鍵詞重疊與 cosine similarity 近似排序來源，並顯示 confidence。這不是正式向量資料庫，但資料結構已為未來接 embeddings / pgvector / OpenAI File Search / Azure AI Search 做準備。
 
+### 個人備份與 Google Drive
+
+本機 JSON 匯出/匯入可用於手動備份。若要使用 Google Drive：
+
+1. 到 Google Cloud Console 建立專案並啟用 Google Drive API。
+2. 建立 OAuth 2.0 Web application client。
+3. 在 Authorized JavaScript origins 加入 `http://localhost:4173`。
+4. 用 `node server.js` 啟動 APP，開啟 `http://localhost:4173`。
+5. 在「版本匯出」頁貼上 OAuth Client ID，按「連接 Drive」。
+
+APP 使用 Google Identity Services 取得使用者授權，並以 Drive API `drive.file` scope 上傳 JSON 備份。這個 scope 只讓 APP 存取它自己建立或使用者授權開啟的檔案，不會讀取整個雲端硬碟。前端只需要 OAuth Client ID，請不要把 Google Client Secret 或任何 API key 貼入 APP 或提交到 GitHub。
+
 ### 匯出 PowerPoint
 
 伺服器模式可匯出 `.pptx`。匯出的簡報包含：
@@ -112,6 +125,7 @@ http://localhost:4173
 ├── package.json
 ├── .env.example
 ├── docs/
+│   ├── deep-report-integration.md
 │   └── product-analysis.md
 └── README.md
 ```
@@ -121,5 +135,5 @@ http://localhost:4173
 - 加入真正的向量資料庫與多文件 RAG。
 - 增加 OCR，支援掃描 PDF 與圖片教材。
 - 增強 PPTX 匯出：主題模板、講者備註、圖片、圖表與動畫。
-- 增加 LMS 整合，例如 Canvas 或 Google Classroom。
+- 增加 LMS 整合，例如 Canvas、Google Classroom 或 Moodle。
 - 增加教師審核紀錄與 AI 生成透明度標記。

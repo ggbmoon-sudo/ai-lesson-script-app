@@ -807,6 +807,81 @@ legend {
   margin-top: 16px;
 }
 
+.cloud-box {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7fbfb;
+  padding: 14px;
+}
+
+.cloud-form {
+  display: grid;
+  gap: 12px;
+}
+
+.cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.drive-status {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--muted);
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+
+.drive-status.strong {
+  color: #14695f;
+  border-color: rgba(20, 105, 95, 0.28);
+  background: #f0fbf8;
+}
+
+.drive-status.error {
+  color: #a33b20;
+  border-color: rgba(163, 59, 32, 0.28);
+  background: #fff6f1;
+}
+
+.drive-backup-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.drive-backup-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.drive-backup-item strong,
+.drive-backup-item span {
+  display: block;
+}
+
+.drive-backup-item strong {
+  overflow-wrap: anywhere;
+}
+
+.drive-backup-item span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+
 .audit-log {
   display: grid;
   gap: 8px;
@@ -941,6 +1016,7 @@ legend {
   .slide-grid,
   .metric-grid,
   .governance-grid,
+  .drive-backup-item,
   .quick-prompts,
   .export-grid,
   .nav-list {

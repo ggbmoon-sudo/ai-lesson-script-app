@@ -31,14 +31,16 @@ The new report reframes the app as a teaching material operating system rather t
 | Real vector RAG | Current retrieval is local lexical + cosine vector approximation, not embedding search |
 | OCR and layout extraction | Scanned PDFs and complex tables need OCR/layout models |
 | RBAC roles | Teacher, TA, student, admin permissions are front-end simulated only |
+| Personal cloud sync | Google Drive backup is manual JSON backup/restore, not automatic conflict-aware sync |
 | LMS integration | No Canvas / Google Classroom / LTI workflow yet |
 | Speech path | No STT/TTS or realtime voice assistant yet |
-| Evaluation suite | No teacher gold set, red-team set, groundedness metrics, or latency tracking |
+| Evaluation suite | Basic QA metrics exist, but no teacher gold set, red-team set, or latency tracking |
 
 ## Suggested Next Build Order
 
 1. Replace local citation vectors with embeddings and persistent vector storage.
 2. Move role permissions to a backend policy layer.
-3. Add OCR provider abstraction for future Azure / Google / AWS integration.
-4. Add LMS export or import stubs.
-5. Add teacher gold-set and red-team evaluation runners.
+3. Add automatic cloud backup scheduling and conflict detection for Google Drive.
+4. Add OCR provider abstraction for future Azure / Google / AWS integration.
+5. Add LMS export or import stubs.
+6. Add teacher gold-set and red-team evaluation runners.

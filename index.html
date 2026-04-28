@@ -419,6 +419,10 @@
                   <strong>完整專案</strong>
                   <span>JSON</span>
                 </button>
+                <button class="export-tile" id="importProjectJsonBtn" type="button">
+                  <strong>匯入備份</strong>
+                  <span>JSON</span>
+                </button>
                 <button class="export-tile" id="exportPptxBtn" type="button">
                   <strong>PowerPoint</strong>
                   <span>PPTX</span>
@@ -431,6 +435,27 @@
                   <strong>重設工作台</strong>
                   <span>Local</span>
                 </button>
+              </div>
+              <input id="importProjectInput" type="file" accept="application/json,.json" hidden />
+              <div class="cloud-box">
+                <div class="panel-heading compact">
+                  <p class="eyebrow">Personal Cloud Backup</p>
+                  <h2>Google Drive 備份</h2>
+                </div>
+                <div class="cloud-form">
+                  <label>
+                    OAuth Client ID
+                    <input id="driveClientIdInput" type="text" placeholder="1234567890-xxxx.apps.googleusercontent.com" autocomplete="off" />
+                  </label>
+                  <div class="cloud-actions">
+                    <button class="action-button ghost" id="connectDriveBtn" type="button">連接 Drive</button>
+                    <button class="action-button" id="backupDriveBtn" type="button">備份到 Drive</button>
+                    <button class="action-button ghost" id="listDriveBackupsBtn" type="button">列出備份</button>
+                    <button class="action-button ghost" id="restoreLatestDriveBtn" type="button">還原最新</button>
+                  </div>
+                </div>
+                <div class="drive-status" id="driveStatus">未連接 Google Drive</div>
+                <div class="drive-backup-list" id="driveBackupList"></div>
               </div>
               <div class="compare-box" id="compareBox"></div>
               <div class="audit-box">

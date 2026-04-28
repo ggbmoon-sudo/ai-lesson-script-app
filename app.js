@@ -1,4 +1,12 @@
 const STORAGE_KEY = "eduscript-ai-studio-state-v1";
+const DRIVE_SETTINGS_KEY = "eduscript-ai-drive-settings-v1";
+const DRIVE_BACKUP_PREFIX = "eduscript-ai-backup-";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const GOOGLE_IDENTITY_SCRIPT = "https://accounts.google.com/gsi/client";
+
+let driveAccessToken = "";
+let driveTokenClient = null;
+let googleIdentityScriptPromise = null;
 
 const bloomMap = {
   remember: {
@@ -75,6 +83,14 @@ const state = {
     helpful: 0,
     needsTeacher: 0,
   },
+  drive: {
+    clientId: "",
+    connected: false,
+    busy: false,
+    status: "未連接 Google Drive",
+    lastBackup: null,
+    backups: [],
+  },
   role: "teacher",
   lastLessonInputs: null,
   budget: null,
@@ -92,6 +108,7 @@ const dom = {};
 document.addEventListener("DOMContentLoaded", async () => {
   bindDom();
   bindEvents();
+  restoreDriveSettings();
   restoreState();
   await checkAiHealth();
   if (!state.slides.length) {
@@ -146,6 +163,9 @@ function bindDom() {
   dom.versionList = document.getElementById("versionList");
   dom.auditLog = document.getElementById("auditLog");
   dom.governanceMetrics = document.getElementById("governanceMetrics");
+  dom.driveClientId = document.getElementById("driveClientIdInput");
+  dom.driveStatus = document.getElementById("driveStatus");
+  dom.driveBackupList = document.getElementById("driveBackupList");
   dom.compareBox = document.getElementById("compareBox");
   dom.aiStatus = document.getElementById("aiStatus");
 }
@@ -168,11 +188,22 @@ function bindEvents() {
   document.getElementById("publishLessonBtn").addEventListener("click", publishLesson);
   document.getElementById("exportJsonBtn").addEventListener("click", exportProjectJson);
   document.getElementById("exportProjectJsonBtn").addEventListener("click", exportProjectJson);
+  document.getElementById("importProjectJsonBtn").addEventListener("click", () => document.getElementById("importProjectInput").click());
+  document.getElementById("importProjectInput").addEventListener("change", importProjectJson);
   document.getElementById("exportLessonMdBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportMarkdownBtn").addEventListener("click", exportLessonMarkdown);
   document.getElementById("exportPptxBtn").addEventListener("click", exportPptx);
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
+  document.getElementById("connectDriveBtn").addEventListener("click", connectGoogleDrive);
+  document.getElementById("backupDriveBtn").addEventListener("click", backupToGoogleDrive);
+  document.getElementById("listDriveBackupsBtn").addEventListener("click", () => listGoogleDriveBackups(true));
+  document.getElementById("restoreLatestDriveBtn").addEventListener("click", restoreLatestGoogleDriveBackup);
+  dom.driveClientId.addEventListener("change", () => {
+    state.drive.clientId = clean(dom.driveClientId.value);
+    persistDriveSettings();
+    renderDrivePanel();
+  });
   dom.roleSelect.addEventListener("change", () => setRole(dom.roleSelect.value));
 
   dom.materialFile.addEventListener("change", handleMaterialUpload);
@@ -237,7 +268,8 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
 }
@@ -450,6 +482,7 @@ function renderAll() {
   renderVersions();
   renderAuditLog();
   renderGovernanceMetrics();
+  renderDrivePanel();
   renderStatus();
   renderAiStatus();
   applyRolePermissions();
@@ -1151,23 +1184,24 @@ function compareVersion(index) {
 
 function exportProjectJson() {
   logAudit("匯出", "完整專案匯出為 JSON");
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    inputs: state.lastLessonInputs || getLessonInputs(),
-    slides: state.slides,
-    questions: state.questions,
-    materialMeta: state.materialMeta,
-    materialPages: state.materialPages,
-    script: state.script,
-    versions: state.versions,
-    auditLog: state.auditLog,
-    publishedRevision: state.publishedRevision,
-    studentQa: state.studentQa,
-    qaMetrics: state.qaMetrics,
-    role: state.role,
-  };
+  const payload = buildProjectPayload("manual-json");
   persistState();
   downloadFile("eduscript-ai-project.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+}
+
+async function importProjectJson(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+
+  try {
+    const text = await readFileAsText(file);
+    const payload = JSON.parse(text);
+    applyProjectPayload(payload, `本機備份 ${file.name}`);
+    dom.compareBox.textContent = `已還原備份：${file.name}`;
+  } catch (error) {
+    dom.compareBox.textContent = `匯入失敗：${error.message}`;
+  }
 }
 
 function exportLessonMarkdown() {
@@ -1221,6 +1255,358 @@ async function copyPrompt() {
   }
   logAudit("匯出", "AI Prompt 已複製或顯示");
   persistState();
+}
+
+function buildProjectPayload(source = "manual") {
+  const inputs = state.lastLessonInputs || getLessonInputs();
+  return {
+    schema: "eduscript-ai-project",
+    schemaVersion: 2,
+    app: "EduScript AI Studio",
+    source,
+    exportedAt: new Date().toISOString(),
+    backupLabel: `${inputs.topic || "未命名教材"}｜${inputs.subject || "未分類"}`,
+    inputs,
+    slides: state.slides,
+    questions: state.questions,
+    materialMeta: state.materialMeta,
+    materialPages: state.materialPages,
+    materialText: dom.materialText.value,
+    assistantContext: dom.assistantContext.value,
+    script: state.script,
+    versions: state.versions,
+    messages: state.messages,
+    auditLog: state.auditLog,
+    publishedRevision: state.publishedRevision,
+    studentQa: state.studentQa,
+    qaMetrics: state.qaMetrics,
+    role: state.role,
+  };
+}
+
+function applyProjectPayload(payload, sourceLabel = "備份") {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("備份檔格式不正確");
+  }
+  if (!Array.isArray(payload.slides) && !payload.script && !payload.inputs) {
+    throw new Error("找不到教材內容");
+  }
+
+  state.slides = payload.slides || [];
+  state.script = payload.script || "";
+  state.questions = payload.questions || [];
+  state.materialPages = payload.materialPages || [];
+  state.materialMeta = payload.materialMeta || null;
+  state.versions = payload.versions || [];
+  state.messages = payload.messages || state.messages || [];
+  state.auditLog = payload.auditLog || [];
+  state.publishedRevision = payload.publishedRevision || null;
+  state.studentQa = payload.studentQa || {
+    question: "",
+    answer: "",
+    mode: "未提問",
+    sources: [],
+  };
+  state.qaMetrics = payload.qaMetrics || {
+    total: 0,
+    grounded: 0,
+    refused: 0,
+    helpful: 0,
+    needsTeacher: 0,
+  };
+  state.role = payload.role || state.role || "teacher";
+  state.lastLessonInputs = payload.inputs || payload.lastLessonInputs || state.lastLessonInputs || getLessonInputs();
+
+  setFormInputs(state.lastLessonInputs);
+  dom.materialText.value = payload.materialText || buildMaterialFromSlides();
+  dom.assistantContext.value = payload.assistantContext || buildAssistantContext();
+  if (state.materialMeta) {
+    setMaterialStatus(`已載入 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段`, true);
+  } else {
+    setMaterialStatus("可貼上教材或上傳檔案，生成講稿時會優先使用。");
+  }
+
+  logAudit("還原備份", `${sourceLabel} 已套用`);
+  renderAll();
+  persistState();
+}
+
+async function connectGoogleDrive() {
+  const clientId = clean(dom.driveClientId.value);
+  if (!clientId) {
+    setDriveStatus("請先填入 Google OAuth Client ID。", false);
+    return;
+  }
+  if (window.location.protocol === "file:") {
+    setDriveStatus("Google Drive 登入需要用 http://localhost:4173 開啟；請先執行 node server.js。", false);
+    return;
+  }
+
+  try {
+    setDriveBusy(true, "正在連接 Google Drive...");
+    await requestDriveToken(clientId);
+    state.drive.clientId = clientId;
+    state.drive.connected = true;
+    setDriveStatus("已連接 Google Drive。", true);
+    persistDriveSettings();
+    logAudit("雲端備份", "Google Drive 已連接");
+    renderDrivePanel();
+  } catch (error) {
+    state.drive.connected = false;
+    setDriveStatus(`Google Drive 連接失敗：${error.message}`, false);
+  } finally {
+    setDriveBusy(false);
+  }
+}
+
+async function backupToGoogleDrive() {
+  try {
+    await ensureDriveAccess();
+    setDriveBusy(true, "正在備份到 Google Drive...");
+    const payload = buildProjectPayload("google-drive");
+    const metadata = {
+      name: buildDriveBackupFilename(payload),
+      mimeType: "application/json",
+      description: "EduScript AI Studio project backup",
+      appProperties: {
+        app: "eduscript-ai-studio",
+        schemaVersion: String(payload.schemaVersion || 1),
+      },
+    };
+    const file = await uploadDriveJson(metadata, payload);
+    state.drive.lastBackup = file;
+    setDriveStatus(`已備份到 Google Drive：${file.name}`, true);
+    logAudit("雲端備份", `已備份到 Google Drive：${file.name}`);
+    persistDriveSettings();
+    await listGoogleDriveBackups(false);
+    setDriveStatus(`已備份到 Google Drive：${file.name}`, true);
+  } catch (error) {
+    setDriveStatus(`備份失敗：${error.message}`, false);
+  } finally {
+    setDriveBusy(false);
+  }
+}
+
+async function listGoogleDriveBackups(showStatus = true) {
+  try {
+    await ensureDriveAccess();
+    setDriveBusy(true, "正在讀取 Google Drive 備份...");
+    const query = [
+      `name contains '${DRIVE_BACKUP_PREFIX}'`,
+      "mimeType = 'application/json'",
+      "trashed = false",
+    ].join(" and ");
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", query);
+    url.searchParams.set("pageSize", "10");
+    url.searchParams.set("orderBy", "modifiedTime desc");
+    url.searchParams.set("fields", "files(id,name,modifiedTime,size,webViewLink)");
+    const data = await driveFetch(url.toString());
+    state.drive.backups = data.files || [];
+    if (showStatus) {
+      setDriveStatus(`找到 ${state.drive.backups.length} 個 Google Drive 備份。`, true);
+    }
+    renderDrivePanel();
+    return state.drive.backups;
+  } catch (error) {
+    setDriveStatus(`讀取備份失敗：${error.message}`, false);
+    return [];
+  } finally {
+    setDriveBusy(false);
+  }
+}
+
+async function restoreLatestGoogleDriveBackup() {
+  const backups = state.drive.backups.length ? state.drive.backups : await listGoogleDriveBackups(false);
+  if (!backups.length) {
+    setDriveStatus("Google Drive 未找到可還原的備份。", false);
+    return;
+  }
+  await restoreGoogleDriveBackup(backups[0].id, backups[0].name);
+}
+
+async function restoreGoogleDriveBackup(fileId, filename = "Google Drive 備份") {
+  const ok = window.confirm(`確定要用「${filename}」覆蓋目前工作台？`);
+  if (!ok) return;
+
+  try {
+    await ensureDriveAccess();
+    setDriveBusy(true, "正在還原 Google Drive 備份...");
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+      headers: {
+        Authorization: `Bearer ${driveAccessToken}`,
+      },
+    });
+    if (!response.ok) throw new Error(await driveErrorMessage(response));
+    const payload = await response.json();
+    applyProjectPayload(payload, `Google Drive：${filename}`);
+    setDriveStatus(`已還原：${filename}`, true);
+    dom.compareBox.textContent = `已從 Google Drive 還原：${filename}`;
+  } catch (error) {
+    setDriveStatus(`還原失敗：${error.message}`, false);
+  } finally {
+    setDriveBusy(false);
+  }
+}
+
+async function ensureDriveAccess() {
+  const clientId = clean(dom.driveClientId.value || state.drive.clientId);
+  if (!clientId) throw new Error("請先填入 Google OAuth Client ID。");
+  if (!driveAccessToken) await connectGoogleDrive();
+  if (!driveAccessToken) throw new Error("尚未取得 Google Drive 授權。");
+}
+
+async function requestDriveToken(clientId) {
+  await loadGoogleIdentityScript();
+  return new Promise((resolve, reject) => {
+    driveTokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: DRIVE_SCOPE,
+      callback: (response) => {
+        if (response.error) {
+          reject(new Error(response.error_description || response.error));
+          return;
+        }
+        driveAccessToken = response.access_token;
+        resolve(response);
+      },
+    });
+    driveTokenClient.requestAccessToken({ prompt: driveAccessToken ? "" : "consent" });
+  });
+}
+
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  if (googleIdentityScriptPromise) return googleIdentityScriptPromise;
+  googleIdentityScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = GOOGLE_IDENTITY_SCRIPT;
+    script.async = true;
+    script.defer = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("無法載入 Google Identity Services。"));
+    document.head.appendChild(script);
+  });
+  return googleIdentityScriptPromise;
+}
+
+async function uploadDriveJson(metadata, payload) {
+  const boundary = `eduscript_${Date.now()}`;
+  const body = [
+    `--${boundary}`,
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    JSON.stringify(metadata),
+    `--${boundary}`,
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    JSON.stringify(payload, null, 2),
+    `--${boundary}--`,
+  ].join("\r\n");
+
+  const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime,size,webViewLink", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${driveAccessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
+  if (!response.ok) throw new Error(await driveErrorMessage(response));
+  return response.json();
+}
+
+async function driveFetch(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${driveAccessToken}`,
+    },
+  });
+  if (!response.ok) throw new Error(await driveErrorMessage(response));
+  return response.json();
+}
+
+async function driveErrorMessage(response) {
+  const payload = await response.json().catch(() => null);
+  return payload?.error?.message || `Google Drive API ${response.status}`;
+}
+
+function buildDriveBackupFilename(payload) {
+  const topic = slugifyFilename(payload.inputs?.topic || "lesson");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${DRIVE_BACKUP_PREFIX}${topic}-${stamp}.json`;
+}
+
+function renderDrivePanel() {
+  if (!dom.driveStatus) return;
+  dom.driveClientId.value = state.drive.clientId || "";
+  dom.driveStatus.textContent = state.drive.status || "未連接 Google Drive";
+  dom.driveStatus.classList.toggle("strong", Boolean(state.drive.connected));
+  dom.driveStatus.classList.toggle("error", !state.drive.connected && state.drive.status !== "未連接 Google Drive");
+
+  if (!state.drive.backups.length) {
+    dom.driveBackupList.innerHTML = emptyText("尚未列出雲端備份");
+    return;
+  }
+
+  dom.driveBackupList.innerHTML = state.drive.backups
+    .map(
+      (file) => `
+        <div class="drive-backup-item">
+          <div>
+            <strong>${escapeHtml(file.name)}</strong>
+            <span>${escapeHtml(new Date(file.modifiedTime).toLocaleString("zh-Hant"))}${file.size ? ` · ${formatBytes(file.size)}` : ""}</span>
+          </div>
+          <button class="action-button ghost" type="button" data-drive-restore="${escapeHtml(file.id)}">還原</button>
+        </div>
+      `,
+    )
+    .join("");
+
+  dom.driveBackupList.querySelectorAll("[data-drive-restore]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const file = state.drive.backups.find((backup) => backup.id === button.dataset.driveRestore);
+      restoreGoogleDriveBackup(button.dataset.driveRestore, file?.name || "Google Drive 備份");
+    });
+  });
+}
+
+function setDriveBusy(busy, message = "") {
+  state.drive.busy = busy;
+  if (message) state.drive.status = message;
+  renderDrivePanel();
+  applyRolePermissions();
+}
+
+function setDriveStatus(message, connected) {
+  state.drive.status = message;
+  if (typeof connected === "boolean") state.drive.connected = connected;
+  renderDrivePanel();
+}
+
+function persistDriveSettings() {
+  localStorage.setItem(
+    DRIVE_SETTINGS_KEY,
+    JSON.stringify({
+      clientId: state.drive.clientId,
+      lastBackup: state.drive.lastBackup,
+    }),
+  );
+}
+
+function restoreDriveSettings() {
+  try {
+    const raw = localStorage.getItem(DRIVE_SETTINGS_KEY);
+    if (!raw) return;
+    const payload = JSON.parse(raw);
+    state.drive.clientId = payload.clientId || "";
+    state.drive.lastBackup = payload.lastBackup || null;
+    state.drive.status = state.drive.clientId ? "可連接 Google Drive" : "未連接 Google Drive";
+  } catch {
+    localStorage.removeItem(DRIVE_SETTINGS_KEY);
+  }
 }
 
 function clearProject() {
@@ -1707,6 +2093,21 @@ function downloadBase64File(filename, base64, type) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function slugifyFilename(value) {
+  return String(value || "lesson")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .slice(0, 80) || "lesson";
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function countWords(text) {
