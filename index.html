@@ -57,6 +57,15 @@
             <span>AI 模式</span>
             <strong>偵測中</strong>
           </div>
+          <label class="role-switch">
+            <span>角色</span>
+            <select id="roleSelect">
+              <option value="teacher">教師</option>
+              <option value="ta">助教</option>
+              <option value="student">學生</option>
+              <option value="admin">管理者</option>
+            </select>
+          </label>
           <div class="top-actions">
             <button class="icon-button" id="loadDemoBtn" type="button" aria-label="載入示範專案" title="載入示範專案">+</button>
             <button class="action-button ghost" id="saveVersionBtn" type="button">
@@ -90,6 +99,14 @@
           <div>
             <span>版本</span>
             <strong id="versionStatus">0</strong>
+          </div>
+          <div>
+            <span>發布狀態</span>
+            <strong id="publishStatus">草稿</strong>
+          </div>
+          <div>
+            <span>QA 有據率</span>
+            <strong id="groundedRateStatus">0%</strong>
           </div>
         </section>
 
@@ -422,6 +439,13 @@
                   <h2>生成紀錄</h2>
                 </div>
                 <div class="audit-log" id="auditLog"></div>
+              </div>
+              <div class="audit-box">
+                <div class="panel-heading compact">
+                  <p class="eyebrow">Governance Metrics</p>
+                  <h2>治理與驗收指標</h2>
+                </div>
+                <div class="governance-grid" id="governanceMetrics"></div>
               </div>
             </section>
           </div>

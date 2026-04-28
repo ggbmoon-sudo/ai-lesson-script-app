@@ -68,6 +68,14 @@ const state = {
     mode: "未提問",
     sources: [],
   },
+  qaMetrics: {
+    total: 0,
+    grounded: 0,
+    refused: 0,
+    helpful: 0,
+    needsTeacher: 0,
+  },
+  role: "teacher",
   lastLessonInputs: null,
   budget: null,
   ai: {
@@ -113,6 +121,9 @@ function bindDom() {
   dom.durationStatus = document.getElementById("durationStatus");
   dom.scriptWordStatus = document.getElementById("scriptWordStatus");
   dom.versionStatus = document.getElementById("versionStatus");
+  dom.publishStatus = document.getElementById("publishStatus");
+  dom.groundedRateStatus = document.getElementById("groundedRateStatus");
+  dom.roleSelect = document.getElementById("roleSelect");
   dom.materialFile = document.getElementById("materialFileInput");
   dom.materialStatus = document.getElementById("materialStatus");
   dom.materialText = document.getElementById("materialTextInput");
@@ -134,6 +145,7 @@ function bindDom() {
   dom.sourceList = document.getElementById("sourceList");
   dom.versionList = document.getElementById("versionList");
   dom.auditLog = document.getElementById("auditLog");
+  dom.governanceMetrics = document.getElementById("governanceMetrics");
   dom.compareBox = document.getElementById("compareBox");
   dom.aiStatus = document.getElementById("aiStatus");
 }
@@ -161,6 +173,7 @@ function bindEvents() {
   document.getElementById("exportPptxBtn").addEventListener("click", exportPptx);
   document.getElementById("copyPromptBtn").addEventListener("click", copyPrompt);
   document.getElementById("clearProjectBtn").addEventListener("click", clearProject);
+  dom.roleSelect.addEventListener("change", () => setRole(dom.roleSelect.value));
 
   dom.materialFile.addEventListener("change", handleMaterialUpload);
   document.getElementById("generateScriptBtn").addEventListener("click", generateScript);
@@ -196,6 +209,44 @@ function bindEvents() {
 function switchView(view) {
   dom.navItems.forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   dom.views.forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
+}
+
+function setRole(role) {
+  state.role = role;
+  if (dom.roleSelect.value !== role) dom.roleSelect.value = role;
+  logAudit("角色切換", `目前角色：${roleLabel(role)}`);
+  applyRolePermissions();
+  if (role === "student") switchView("student");
+  persistState();
+}
+
+function roleLabel(role) {
+  const labels = {
+    teacher: "教師",
+    ta: "助教",
+    student: "學生",
+    admin: "管理者",
+  };
+  return labels[role] || "教師";
+}
+
+function applyRolePermissions() {
+  if (!dom.roleSelect) return;
+  dom.roleSelect.value = state.role || "teacher";
+  const canEdit = ["teacher", "admin"].includes(state.role);
+  const canAssist = ["teacher", "ta", "admin"].includes(state.role);
+  const canPublish = ["teacher", "admin"].includes(state.role);
+
+  setDisabled(["generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["publishLessonBtn"], !canPublish);
+  setDisabled(["sendAssistantBtn"], !canAssist);
+}
+
+function setDisabled(ids, disabled) {
+  ids.forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) element.disabled = disabled;
+  });
 }
 
 async function checkAiHealth() {
@@ -398,8 +449,10 @@ function renderAll() {
   renderPublishedQa();
   renderVersions();
   renderAuditLog();
+  renderGovernanceMetrics();
   renderStatus();
   renderAiStatus();
+  applyRolePermissions();
 }
 
 function renderTimeline() {
@@ -753,6 +806,7 @@ function renderStudentSources(sources) {
         <article class="source-item">
           <strong>${escapeHtml(source.label)}</strong>
           <span>${escapeHtml(source.preview)}</span>
+          <span>chunk: ${escapeHtml(source.id || "n/a")}｜hash: ${escapeHtml((source.sourceHash || "").slice(0, 12))}｜confidence: ${Math.round((source.confidence || 0) * 100)}%</span>
         </article>
       `,
     )
@@ -775,39 +829,74 @@ function askPublishedLesson() {
   }
 
   const sources = retrievePublishedSources(question, state.publishedRevision);
-  const supported = sources.length && sources[0].score >= 2;
+  const supported = sources.length && sources[0].score >= 3.5;
   state.studentQa = {
     question,
     mode: supported ? "教材有據" : "尚未在教材找到",
     answer: supported ? buildGroundedStudentAnswer(question, sources) : "已發布教材中未找到足夠依據回答這個問題。請改問與目前教材更直接相關的問題，或請老師補充。",
     sources: supported ? sources.slice(0, 4) : [],
   };
+  updateQaMetrics(supported);
   logAudit("學生問答", `${state.studentQa.mode}：${question.slice(0, 80)}`);
   renderPublishedQa();
+  renderGovernanceMetrics();
   persistState();
 }
 
 function retrievePublishedSources(question, revision) {
-  const keywords = extractKeywords(question);
-  const slideSources = (revision.slides || []).map((slide) => ({
-    type: "slide",
-    label: `投影片 ${slide.number || ""}：${slide.title}`,
-    text: `${slide.title}\n${slide.event}\n${slide.bloom}\n${slide.activity}\n${slide.notes}`,
-    preview: `${slide.event || ""} ${slide.bloom || ""} ${String(slide.notes || "").slice(0, 160)}`,
-  }));
-  const materialSources = (revision.materialPages || []).map((page) => ({
-    type: "material",
-    label: `教材片段 ${page.number}：${page.title}`,
-    text: page.text,
-    preview: String(page.text || "").slice(0, 180),
-  }));
-  const allSources = [...slideSources, ...materialSources];
+  const index = revision.citationIndex?.length ? revision.citationIndex : buildCitationIndex(revision);
+  const queryVector = makeSearchVector(question);
 
-  return allSources
-    .map((source) => ({ ...source, score: scoreSource(source.text, keywords) }))
+  return index
+    .map((source) => {
+      const lexical = scoreSource(source.text, extractKeywords(question));
+      const semantic = cosineSimilarity(queryVector, source.vector);
+      const score = lexical + semantic * 10;
+      return {
+        ...source,
+        score,
+        confidence: Math.min(0.98, Number((score / 18).toFixed(2))),
+      };
+    })
     .filter((source) => source.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 6);
+}
+
+function buildCitationIndex(revision) {
+  const slideChunks = (revision.slides || []).map((slide) => {
+    const text = `${slide.title}\n${slide.event}\n${slide.bloom}\n${slide.activity}\n${slide.notes}`;
+    return createCitationChunk({
+      type: "slide",
+      number: slide.number || 0,
+      label: `投影片 ${slide.number || ""}：${slide.title}`,
+      text,
+      preview: `${slide.event || ""} ${slide.bloom || ""} ${String(slide.notes || "").slice(0, 180)}`,
+    });
+  });
+  const materialChunks = (revision.materialPages || []).map((page) => createCitationChunk({
+    type: "material",
+    number: page.number || 0,
+    label: `教材片段 ${page.number || ""}：${page.title}`,
+    text: page.text || "",
+    preview: String(page.text || "").slice(0, 220),
+  }));
+  return [...slideChunks, ...materialChunks].filter((chunk) => chunk.text.trim());
+}
+
+function createCitationChunk({ type, number, label, text, preview }) {
+  const normalizedText = String(text || "");
+  const sourceHash = hashString(`${type}:${number}:${normalizedText}`);
+  return {
+    id: `${type}_${number}_${sourceHash.slice(0, 8)}`,
+    type,
+    number,
+    label,
+    text: normalizedText,
+    preview,
+    sourceHash,
+    vector: makeSearchVector(normalizedText),
+  };
 }
 
 function scoreSource(text, keywords) {
@@ -819,10 +908,62 @@ function scoreSource(text, keywords) {
   }, 0);
 }
 
+function makeSearchVector(text) {
+  const vector = {};
+  tokenizeForSearch(text).forEach((token) => {
+    vector[token] = (vector[token] || 0) + 1;
+  });
+  return vector;
+}
+
+function tokenizeForSearch(text) {
+  const value = String(text || "").toLowerCase();
+  const words = value.match(/[a-z0-9]{2,}|[\u3400-\u9fff]{2,}/g) || [];
+  const tokens = [];
+  words.forEach((word) => {
+    if (/^[\u3400-\u9fff]+$/.test(word)) {
+      for (let index = 0; index < word.length - 1; index += 1) {
+        tokens.push(word.slice(index, index + 2));
+      }
+      for (let index = 0; index < word.length - 2; index += 2) {
+        tokens.push(word.slice(index, index + 3));
+      }
+    } else {
+      tokens.push(word);
+    }
+  });
+  return tokens;
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let aMag = 0;
+  let bMag = 0;
+  Object.entries(a || {}).forEach(([token, value]) => {
+    dot += value * (b[token] || 0);
+    aMag += value * value;
+  });
+  Object.values(b || {}).forEach((value) => {
+    bMag += value * value;
+  });
+  if (!aMag || !bMag) return 0;
+  return dot / (Math.sqrt(aMag) * Math.sqrt(bMag));
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function buildGroundedStudentAnswer(question, sources) {
   const top = sources.slice(0, 3);
   const keyPoints = top
-    .map((source, index) => `${index + 1}. ${source.preview.replace(/\s+/g, " ").slice(0, 110)}`)
+    .map((source, index) => `${index + 1}. ${source.preview.replace(/\s+/g, " ").slice(0, 110)}（信心 ${Math.round((source.confidence || 0) * 100)}%）`)
     .join("\n");
   return [
     `根據已發布教材，這題可以先從 ${top[0].label} 理解。`,
@@ -835,9 +976,21 @@ function buildGroundedStudentAnswer(question, sources) {
 
 function recordStudentFeedback(label) {
   if (!state.studentQa.question) return;
+  if (label === "helpful") state.qaMetrics.helpful += 1;
+  if (label === "needs_teacher") state.qaMetrics.needsTeacher += 1;
   logAudit("學生回饋", `${label}｜${state.studentQa.question.slice(0, 80)}`);
   dom.studentAnswer.innerHTML = `<strong>${escapeHtml(state.studentQa.mode)}</strong>\n${escapeHtml(state.studentQa.answer)}\n\n已記錄回饋：${label === "helpful" ? "有幫助" : "需要老師"}`;
+  renderGovernanceMetrics();
   persistState();
+}
+
+function updateQaMetrics(supported) {
+  state.qaMetrics.total += 1;
+  if (supported) {
+    state.qaMetrics.grounded += 1;
+  } else {
+    state.qaMetrics.refused += 1;
+  }
 }
 
 function saveVersion() {
@@ -873,6 +1026,7 @@ function publishLesson() {
     materialMeta: structuredCloneSafe(state.materialMeta),
     auditLog: structuredCloneSafe(state.auditLog),
   };
+  revision.citationIndex = buildCitationIndex(revision);
   state.publishedRevision = revision;
   renderPublishedQa();
   persistState();
@@ -927,6 +1081,31 @@ function renderAuditLog() {
       `,
     )
     .join("");
+}
+
+function renderGovernanceMetrics() {
+  if (!dom.governanceMetrics) return;
+  const metrics = getGovernanceMetrics();
+  dom.governanceMetrics.innerHTML = [
+    metricCard("角色", roleLabel(state.role), "RBAC 模擬模式"),
+    metricCard("發布版本", state.publishedRevision ? "已發布" : "草稿", state.publishedRevision ? new Date(state.publishedRevision.publishedAt).toLocaleString("zh-Hant") : "學生端不可用"),
+    metricCard("Citation Chunks", String(metrics.chunkCount), "發布教材可檢索來源數"),
+    metricCard("QA 有據率", `${metrics.groundedRate}%`, `${state.qaMetrics.grounded}/${state.qaMetrics.total} grounded`),
+    metricCard("拒答率", `${metrics.refusalRate}%`, `${state.qaMetrics.refused}/${state.qaMetrics.total} refused`),
+    metricCard("需要老師", String(state.qaMetrics.needsTeacher), "學生回饋需人工介入"),
+  ].join("");
+}
+
+function metricCard(label, value, hint) {
+  return `<article class="governance-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></article>`;
+}
+
+function getGovernanceMetrics() {
+  const total = state.qaMetrics.total || 0;
+  const groundedRate = total ? Math.round((state.qaMetrics.grounded / total) * 100) : 0;
+  const refusalRate = total ? Math.round((state.qaMetrics.refused / total) * 100) : 0;
+  const chunkCount = state.publishedRevision?.citationIndex?.length || 0;
+  return { groundedRate, refusalRate, chunkCount };
 }
 
 function logAudit(action, detail) {
@@ -984,6 +1163,8 @@ function exportProjectJson() {
     auditLog: state.auditLog,
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
+    qaMetrics: state.qaMetrics,
+    role: state.role,
   };
   persistState();
   downloadFile("eduscript-ai-project.json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
@@ -1061,6 +1242,14 @@ function clearProject() {
     mode: "未提問",
     sources: [],
   };
+  state.qaMetrics = {
+    total: 0,
+    grounded: 0,
+    refused: 0,
+    helpful: 0,
+    needsTeacher: 0,
+  };
+  state.role = "teacher";
   state.lastLessonInputs = null;
   state.budget = null;
   generateLesson();
@@ -1089,6 +1278,8 @@ function renderStatus() {
   dom.durationStatus.textContent = String((state.lastLessonInputs || getLessonInputs()).duration);
   dom.scriptWordStatus.textContent = String(countWords(state.script));
   dom.versionStatus.textContent = String(state.versions.length);
+  dom.publishStatus.textContent = state.publishedRevision ? "已發布" : "草稿";
+  dom.groundedRateStatus.textContent = `${getGovernanceMetrics().groundedRate}%`;
 }
 
 function renderAiStatus() {
@@ -1450,6 +1641,8 @@ function persistState() {
     auditLog: state.auditLog,
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
+    qaMetrics: state.qaMetrics,
+    role: state.role,
     lastLessonInputs: state.lastLessonInputs,
     materialText: dom.materialText.value,
     assistantContext: dom.assistantContext.value,
@@ -1473,6 +1666,8 @@ function restoreState() {
     state.auditLog = payload.auditLog || [];
     state.publishedRevision = payload.publishedRevision || null;
     state.studentQa = payload.studentQa || state.studentQa;
+    state.qaMetrics = payload.qaMetrics || state.qaMetrics;
+    state.role = payload.role || "teacher";
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);
     dom.materialText.value = payload.materialText || buildMaterialFromSlides();

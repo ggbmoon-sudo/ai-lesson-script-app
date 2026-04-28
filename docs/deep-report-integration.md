@@ -20,22 +20,25 @@ The new report reframes the app as a teaching material operating system rather t
 | Grounded answers with source display | Student QA returns slide/material sources or refuses |
 | Provenance and audit | Audit log records generation, parsing, publishing, export, feedback |
 | Source refs | Published slides are annotated with best-effort material refs |
+| Local citation index | Published revisions build chunk IDs, source hashes, token vectors, confidence scores |
+| Role modes | Teacher / TA / Student / Admin front-end permission simulation |
+| QA metrics | Grounded rate, refusal rate, helpful feedback, and needs-teacher counts |
 
 ## Still Missing
 
 | Gap | Why It Matters |
 |---|---|
-| Real vector RAG | Current retrieval is keyword scoring, not embedding search |
+| Real vector RAG | Current retrieval is local lexical + cosine vector approximation, not embedding search |
 | OCR and layout extraction | Scanned PDFs and complex tables need OCR/layout models |
-| RBAC roles | Teacher, TA, student, admin permissions are still simulated |
+| RBAC roles | Teacher, TA, student, admin permissions are front-end simulated only |
 | LMS integration | No Canvas / Google Classroom / LTI workflow yet |
 | Speech path | No STT/TTS or realtime voice assistant yet |
 | Evaluation suite | No teacher gold set, red-team set, groundedness metrics, or latency tracking |
 
 ## Suggested Next Build Order
 
-1. Add local vector-like index with chunk IDs, source hashes, and citation precision fields.
-2. Add role mode switch: Teacher / Student / TA / Admin.
-3. Add assessment and QA metrics dashboard.
-4. Add OCR provider abstraction for future Azure / Google / AWS integration.
-5. Add LMS export or import stubs.
+1. Replace local citation vectors with embeddings and persistent vector storage.
+2. Move role permissions to a backend policy layer.
+3. Add OCR provider abstraction for future Azure / Google / AWS integration.
+4. Add LMS export or import stubs.
+5. Add teacher gold-set and red-team evaluation runners.

@@ -89,13 +89,21 @@
 - 若已發布教材中找不到足夠依據，學生端會明確拒答，避免把流暢文字誤認為教材原意。
 - 投影片會在發布時嘗試掛上 `sourceRefs`，對齊 deep report 的 provenance 思路。
 
+已在第六階段新增：
+
+- 發布版本會建立本機 citation index，包含 chunk id、source hash、簡易 token vector 與 confidence。
+- 學生問答的檢索排序由純關鍵字提升為 lexical overlap + cosine similarity 近似。
+- 新增教師、助教、學生、管理者角色模式，前端會依角色限制可用操作。
+- 新增治理指標：citation chunk 數、QA 有據率、拒答率、需要老師介入次數。
+- 這些資料會保存在 localStorage / JSON 匯出中，方便後續改接正式資料庫與向量服務。
+
 未在本版本實作：
 
 - 掃描 PDF OCR
-- RAG 向量資料庫
+- 正式 RAG 向量資料庫與 embedding pipeline
 - 高階 PPTX 模板、圖片、動畫與完整講者備註
 - LMS 登入與成績回傳
-- RBAC / 多角色權限 / 多租戶治理
+- 後端 RBAC / 多租戶治理 / SSO
 
 ## 建議技術路線
 

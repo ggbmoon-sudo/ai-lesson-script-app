@@ -16,6 +16,9 @@
 - 學生問答：只根據教師發布版本回答，並列出來源投影片或教材片段。
 - 版本保存：使用 localStorage 儲存教材版本，支援還原與比較。
 - 發布治理：教師可將草稿發布為學生端可見版本。
+- 角色模式：支援教師、助教、學生、管理者的前端權限模擬。
+- 本機 citation index：發布時建立 chunk id、source hash、搜尋向量與 confidence。
+- 治理指標：顯示發布狀態、citation chunk 數、QA 有據率、拒答率與需老師介入次數。
 - 匯出：支援 Markdown、JSON 與伺服器模式 PPTX。
 - AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
@@ -71,6 +74,19 @@ http://localhost:4173
 - `尚未發布`：教師還未發布教材。
 
 學生可標記「有幫助」或「需要老師」，回饋會進入生成紀錄。
+
+### 治理與檢索
+
+發布教材時，系統會建立本機 citation index。每個來源片段包含：
+
+- `id`
+- `sourceHash`
+- `type`
+- `label`
+- `preview`
+- 簡易搜尋向量
+
+學生提問時會用關鍵詞重疊與 cosine similarity 近似排序來源，並顯示 confidence。這不是正式向量資料庫，但資料結構已為未來接 embeddings / pgvector / OpenAI File Search / Azure AI Search 做準備。
 
 ### 匯出 PowerPoint
 

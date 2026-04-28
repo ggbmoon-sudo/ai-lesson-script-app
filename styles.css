@@ -193,6 +193,23 @@ button {
   font-size: 0.92rem;
 }
 
+.role-switch {
+  display: grid;
+  min-width: 132px;
+  gap: 4px;
+  font-size: 0.78rem;
+}
+
+.role-switch span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.role-switch select {
+  min-height: 40px;
+  background: var(--surface);
+}
+
 .action-button,
 .icon-button,
 .export-tile,
@@ -249,7 +266,7 @@ button {
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 22px;
 }
@@ -819,6 +836,41 @@ legend {
   line-height: 1.45;
 }
 
+.governance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.governance-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 12px;
+}
+
+.governance-card span,
+.governance-card strong,
+.governance-card small {
+  display: block;
+}
+
+.governance-card span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 4px;
+}
+
+.governance-card strong {
+  font-size: 1.24rem;
+}
+
+.governance-card small {
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 5px;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -866,6 +918,10 @@ legend {
     margin-left: 0;
   }
 
+  .role-switch {
+    min-width: 0;
+  }
+
   .top-actions,
   .control-bar,
   .inline-controls {
@@ -884,6 +940,7 @@ legend {
   .check-grid,
   .slide-grid,
   .metric-grid,
+  .governance-grid,
   .quick-prompts,
   .export-grid,
   .nav-list {
