@@ -65,9 +65,16 @@
 - `/api/ai/script` 依教材、起始頁、分鐘與 WPM 生成講稿。
 - `/api/ai/assistant` 生成課堂即時回應、查核點與下一步操作。
 
+已在第三階段新增：
+
+- `/api/parse-material` 可解析 TXT、MD、PPTX、DOCX、PDF。
+- PPTX/DOCX 透過 OpenXML zip 結構抽取投影片、文件文字與講者備註。
+- PDF 提供基礎文字抽取，作為非掃描 PDF 的先行支援。
+- 前端保留解析後的頁碼/片段，講稿生成時會以起始頁、課題與學習目標做簡單檢索排序。
+
 未在本版本實作：
 
-- PPTX/PDF 內容解析
+- 掃描 PDF OCR
 - RAG 向量資料庫
 - PPTX 原生輸出
 - LMS 登入與成績回傳

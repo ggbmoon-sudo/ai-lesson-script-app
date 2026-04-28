@@ -56,6 +56,8 @@ const state = {
   slides: [],
   script: "",
   questions: [],
+  materialPages: [],
+  materialMeta: null,
   versions: [],
   messages: [],
   lastLessonInputs: null,
@@ -104,6 +106,7 @@ function bindDom() {
   dom.scriptWordStatus = document.getElementById("scriptWordStatus");
   dom.versionStatus = document.getElementById("versionStatus");
   dom.materialFile = document.getElementById("materialFileInput");
+  dom.materialStatus = document.getElementById("materialStatus");
   dom.materialText = document.getElementById("materialTextInput");
   dom.startPage = document.getElementById("startPageInput");
   dom.scriptMinutes = document.getElementById("scriptMinutesInput");
@@ -463,14 +466,43 @@ function regenerateSelectedSlide() {
   persistState();
 }
 
-function handleMaterialUpload(event) {
+async function handleMaterialUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    dom.materialText.value = String(reader.result || "");
-  };
-  reader.readAsText(file, "UTF-8");
+  setMaterialStatus(`正在解析 ${file.name}...`, true);
+
+  try {
+    const parsed = await parseMaterialFile(file);
+    if (parsed?.text) {
+      state.materialPages = parsed.pages || [];
+      state.materialMeta = {
+        filename: parsed.filename || file.name,
+        type: parsed.type || file.name.split(".").pop(),
+        warning: parsed.warning || "",
+      };
+      dom.materialText.value = parsed.text;
+      setMaterialStatus(
+        `已解析 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段${state.materialMeta.warning ? `。${state.materialMeta.warning}` : ""}`,
+        true,
+      );
+      persistState();
+      return;
+    }
+  } catch (error) {
+    console.warn(error);
+  }
+
+  if (isPlainTextFile(file)) {
+    const text = await readFileAsText(file);
+    state.materialPages = textToPages(text);
+    state.materialMeta = { filename: file.name, type: "text", warning: "" };
+    dom.materialText.value = text;
+    setMaterialStatus(`已讀入 ${file.name}：${state.materialPages.length || 1} 個文字片段`, true);
+    persistState();
+    return;
+  }
+
+  setMaterialStatus("此檔案需要以 node server.js 啟動後才能解析。", false);
 }
 
 async function generateScript() {
@@ -481,7 +513,8 @@ async function generateScript() {
   const budget = calculateBudget(minutes);
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
-  const fragments = materialFragments(material, startPage);
+  const fragments = materialFragments(material, startPage, inputs);
+  const focusedMaterial = fragments.length ? fragments.join("\n\n") : material;
 
   state.budget = { ...budget, wpm, targetWords };
   setAiBusy(true, "生成講稿中");
@@ -489,7 +522,7 @@ async function generateScript() {
   try {
     const aiScript = await requestAi("script", {
       inputs,
-      material,
+      material: focusedMaterial,
       startPage,
       minutes,
       budget,
@@ -744,6 +777,8 @@ function clearProject() {
   state.slides = [];
   state.script = "";
   state.questions = [];
+  state.materialPages = [];
+  state.materialMeta = null;
   state.versions = [];
   state.messages = [];
   state.lastLessonInputs = null;
@@ -899,13 +934,123 @@ function buildMaterialFromSlides() {
     .join("\n\n");
 }
 
-function materialFragments(material, startPage) {
-  const blocks = material
+async function parseMaterialFile(file) {
+  if (window.location.protocol === "file:") {
+    return null;
+  }
+
+  const data = await readFileAsDataUrl(file);
+  const response = await fetch("/api/parse-material", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      mimeType: file.type,
+      data,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Material parse failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("File read failed"));
+    reader.readAsText(file, "UTF-8");
+  });
+}
+
+function isPlainTextFile(file) {
+  return /\.(txt|md|csv|json)$/i.test(file.name) || file.type.startsWith("text/");
+}
+
+function setMaterialStatus(message, strong = false) {
+  if (!dom.materialStatus) return;
+  dom.materialStatus.textContent = message;
+  dom.materialStatus.classList.toggle("strong", strong);
+}
+
+function textToPages(text) {
+  const blocks = String(text || "")
     .split(/\n{2,}|第\s*\d+\s*頁|Slide\s*\d+/i)
-    .map((text) => clean(text))
+    .map((block) => clean(block))
     .filter(Boolean);
-  const start = Math.max(0, Math.min(blocks.length - 1, startPage - 1));
-  return blocks.slice(start, start + 5).map((block) => block.slice(0, 180));
+  const source = blocks.length ? blocks : chunkTextForClient(text, 1000);
+  return source.map((block, index) => ({
+    number: index + 1,
+    title: firstClientLine(block) || `文字片段 ${index + 1}`,
+    text: block,
+  }));
+}
+
+function materialFragments(material, startPage, inputs) {
+  const pages = state.materialPages.length ? state.materialPages : textToPages(material);
+  if (!pages.length) return [];
+
+  const startIndex = clamp(startPage - 1, 0, Math.max(0, pages.length - 1));
+  const localWindow = pages.slice(startIndex, startIndex + 12);
+  const keywords = extractKeywords(`${inputs.topic} ${inputs.objective} ${inputs.context}`);
+  const scored = localWindow.map((page, offset) => ({
+    page,
+    index: startIndex + offset,
+    score: scoreMaterialPage(page, keywords, offset),
+  }));
+
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .sort((a, b) => a.index - b.index)
+    .map(({ page }) => `第 ${page.number} 頁：${page.title}\n${page.text.slice(0, 650)}`);
+}
+
+function scoreMaterialPage(page, keywords, offset) {
+  const text = `${page.title} ${page.text}`.toLowerCase();
+  const keywordScore = keywords.reduce((sum, keyword) => sum + (text.includes(keyword.toLowerCase()) ? 3 : 0), 0);
+  const proximityScore = Math.max(0, 8 - offset);
+  const densityScore = Math.min(4, Math.round(page.text.length / 180));
+  return keywordScore + proximityScore + densityScore;
+}
+
+function extractKeywords(text) {
+  const raw = String(text || "")
+    .replace(/[，。！？、；：「」『』（）()[\]{}]/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 2);
+  return Array.from(new Set(raw)).slice(0, 12);
+}
+
+function chunkTextForClient(text, maxLength) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  const chunks = [];
+  for (let index = 0; index < normalized.length; index += maxLength) {
+    chunks.push(normalized.slice(index, index + maxLength));
+  }
+  return chunks;
+}
+
+function firstClientLine(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 80) || "";
 }
 
 function calculateBudget(total) {
@@ -996,6 +1141,8 @@ function persistState() {
     slides: state.slides,
     script: state.script,
     questions: state.questions,
+    materialPages: state.materialPages,
+    materialMeta: state.materialMeta,
     versions: state.versions,
     messages: state.messages,
     lastLessonInputs: state.lastLessonInputs,
@@ -1014,12 +1161,17 @@ function restoreState() {
     state.slides = payload.slides || [];
     state.script = payload.script || "";
     state.questions = payload.questions || [];
+    state.materialPages = payload.materialPages || [];
+    state.materialMeta = payload.materialMeta || null;
     state.versions = payload.versions || [];
     state.messages = payload.messages || [];
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);
     dom.materialText.value = payload.materialText || buildMaterialFromSlides();
     dom.assistantContext.value = payload.assistantContext || buildAssistantContext();
+    if (state.materialMeta) {
+      setMaterialStatus(`已載入 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段`, true);
+    }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }

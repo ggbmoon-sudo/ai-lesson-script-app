@@ -8,6 +8,7 @@
 - 教材生成：依 Bloom's Taxonomy 與 Gagne's Nine Events 產出可編輯投影片草稿。
 - 局部再生成：選擇單頁投影片並輸入修改意見。
 - 進度講稿：貼上或上傳教材文字，設定起始頁與分鐘，自動計算 WPM、核心講授時間與講稿。
+- 教材解析：伺服器模式支援 TXT、MD、PPTX、DOCX、PDF 的基礎文字抽取。
 - 即時助理：基於目前課堂脈絡生成回答、互動問題、事實查核提示與 exit ticket。
 - 版本保存：使用 localStorage 儲存教材版本，支援還原與比較。
 - 匯出：支援 Markdown 與 JSON。
@@ -46,6 +47,14 @@ http://localhost:4173
 
 有 API key 時，教材生成、講稿生成與即時助理會透過 `server.js` 呼叫 OpenAI Responses API。沒有 API key 時，前端會自動回到本機規則生成。
 
+### 上傳教材
+
+- 離線模式：支援純文字類檔案，例如 `.txt`、`.md`、`.csv`、`.json`。
+- 伺服器模式：額外支援 `.pptx`、`.docx`、`.pdf`。
+- PPTX/DOCX 會從 OpenXML 結構抽取文字與講者備註。
+- PDF 目前是基礎文字抽取；掃描圖像型 PDF 仍需要 OCR。
+- 解析後會保留頁碼/片段，講稿生成時會根據起始頁與課題關鍵字選取相關片段。
+
 ## 檔案結構
 
 ```text
@@ -63,7 +72,8 @@ http://localhost:4173
 
 ## 下一步可擴展
 
-- 支援 PPTX/PDF 解析與向量檢索。
+- 加入真正的向量資料庫與多文件 RAG。
+- 增加 OCR，支援掃描 PDF 與圖片教材。
 - 增加 PPTX 原生匯出。
 - 增加 LMS 整合，例如 Canvas 或 Google Classroom。
 - 增加教師審核紀錄與 AI 生成透明度標記。

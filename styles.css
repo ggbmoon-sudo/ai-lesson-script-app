@@ -551,6 +551,23 @@ legend {
   background: white;
 }
 
+.parse-status {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: var(--muted);
+  line-height: 1.5;
+  padding: 10px 12px;
+  font-size: 0.86rem;
+}
+
+.parse-status.strong {
+  border-color: #c5ded8;
+  background: #eef7f5;
+  color: var(--teal-dark);
+  font-weight: 700;
+}
+
 .time-budget {
   display: grid;
   gap: 10px;

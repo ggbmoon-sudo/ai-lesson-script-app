@@ -1,6 +1,7 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const zlib = require("node:zlib");
 const { URL } = require("node:url");
 
 loadEnvFile(path.join(__dirname, ".env"));
@@ -98,6 +99,10 @@ const server = http.createServer(async (req, res) => {
       return handleAiRequest(req, res, url.pathname);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/parse-material") {
+      return handleMaterialParse(req, res);
+    }
+
     if (req.method !== "GET") {
       return sendJson(res, 405, { error: "Method not allowed" });
     }
@@ -150,6 +155,128 @@ async function handleAiRequest(req, res, pathname) {
   }
 
   return sendJson(res, 404, { error: "Unknown AI endpoint" });
+}
+
+async function handleMaterialParse(req, res) {
+  const body = await readJsonBody(req, 30_000_000);
+  const filename = String(body.filename || "material").trim();
+  const mimeType = String(body.mimeType || "").trim();
+  const extension = path.extname(filename).toLowerCase();
+  const base64 = String(body.data || "").includes(",")
+    ? String(body.data).split(",").pop()
+    : String(body.data || "");
+
+  if (!base64) {
+    return sendJson(res, 400, { error: "Missing file data" });
+  }
+
+  const buffer = Buffer.from(base64, "base64");
+  const parsed = parseMaterialBuffer(buffer, filename, extension, mimeType);
+  return sendJson(res, 200, parsed);
+}
+
+function parseMaterialBuffer(buffer, filename, extension, mimeType) {
+  if ([".pptx", ".docx"].includes(extension)) {
+    return parseOpenXmlMaterial(buffer, filename, extension);
+  }
+
+  if (extension === ".pdf" || mimeType === "application/pdf") {
+    return parsePdfMaterial(buffer, filename);
+  }
+
+  const text = buffer.toString("utf8");
+  return {
+    filename,
+    type: extension.replace(".", "") || "text",
+    pages: chunkText(text, 1200).map((chunk, index) => ({
+      number: index + 1,
+      title: `文字片段 ${index + 1}`,
+      text: chunk,
+    })),
+    text,
+    warning: "",
+  };
+}
+
+function parseOpenXmlMaterial(buffer, filename, extension) {
+  const entries = readZipEntries(buffer);
+
+  if (extension === ".pptx") {
+    const slides = Array.from(entries.keys())
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+      .sort(compareNumberedPath);
+
+    const pages = slides.map((name, index) => {
+      const slideText = extractXmlText(entries.get(name).toString("utf8"));
+      const notesName = `ppt/notesSlides/notesSlide${index + 1}.xml`;
+      const notesText = entries.has(notesName)
+        ? extractXmlText(entries.get(notesName).toString("utf8"))
+        : "";
+      const text = [slideText, notesText && `講者備註：${notesText}`].filter(Boolean).join("\n");
+      return {
+        number: index + 1,
+        title: firstLine(text) || `投影片 ${index + 1}`,
+        text,
+      };
+    });
+
+    return {
+      filename,
+      type: "pptx",
+      pages,
+      text: pagesToText(pages),
+      warning: pages.length ? "" : "未能在 PPTX 找到投影片文字。",
+    };
+  }
+
+  const documentXml = entries.get("word/document.xml");
+  if (!documentXml) {
+    return {
+      filename,
+      type: "docx",
+      pages: [],
+      text: "",
+      warning: "未能在 DOCX 找到 word/document.xml。",
+    };
+  }
+
+  const paragraphs = extractDocxParagraphs(documentXml.toString("utf8"));
+  const chunks = chunkText(paragraphs.join("\n"), 1200);
+  const pages = chunks.map((chunk, index) => ({
+    number: index + 1,
+    title: firstLine(chunk) || `文件片段 ${index + 1}`,
+    text: chunk,
+  }));
+
+  return {
+    filename,
+    type: "docx",
+    pages,
+    text: pagesToText(pages),
+    warning: "",
+  };
+}
+
+function parsePdfMaterial(buffer, filename) {
+  const raw = buffer.toString("latin1");
+  const pageSegments = raw.split(/\/Type\s*\/Page\b/g).slice(1);
+  const extracted = pageSegments.length
+    ? pageSegments.map(extractPdfText).filter(Boolean)
+    : [extractPdfText(raw)].filter(Boolean);
+  const chunks = extracted.length ? extracted : chunkText(extractPdfText(raw), 1200);
+  const pages = chunks.map((chunk, index) => ({
+    number: index + 1,
+    title: firstLine(chunk) || `PDF 片段 ${index + 1}`,
+    text: chunk,
+  }));
+
+  return {
+    filename,
+    type: "pdf",
+    pages,
+    text: pagesToText(pages),
+    warning: "PDF 解析為基礎文字抽取；掃描圖像型 PDF 需要 OCR 才能完整讀取。",
+  };
 }
 
 async function createStructuredResponse({ schemaName, schema, input }) {
@@ -257,6 +384,174 @@ function extractOutputText(payload) {
   return chunks.join("\n");
 }
 
+function readZipEntries(buffer) {
+  const eocdOffset = findEndOfCentralDirectory(buffer);
+  if (eocdOffset === -1) {
+    throw new Error("Invalid ZIP/OpenXML file.");
+  }
+
+  const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+  const centralDirectoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+  const entries = new Map();
+  let offset = centralDirectoryOffset;
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+
+    const compression = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+
+    const localNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+    const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+
+    if (!name.endsWith("/")) {
+      entries.set(name, inflateZipEntry(compressed, compression));
+    }
+
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function findEndOfCentralDirectory(buffer) {
+  const signature = 0x06054b50;
+  const minOffset = Math.max(0, buffer.length - 66_000);
+  for (let offset = buffer.length - 22; offset >= minOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === signature) {
+      return offset;
+    }
+  }
+  return -1;
+}
+
+function inflateZipEntry(buffer, compression) {
+  if (compression === 0) return buffer;
+  if (compression === 8) return zlib.inflateRawSync(buffer);
+  throw new Error(`Unsupported ZIP compression method: ${compression}`);
+}
+
+function compareNumberedPath(a, b) {
+  return extractFirstNumber(a) - extractFirstNumber(b);
+}
+
+function extractFirstNumber(value) {
+  return Number(String(value).match(/\d+/)?.[0] || 0);
+}
+
+function extractXmlText(xml) {
+  const chunks = [];
+  const regex = /<(?:a|w):t\b[^>]*>([\s\S]*?)<\/(?:a|w):t>/g;
+  let match;
+  while ((match = regex.exec(xml))) {
+    chunks.push(decodeXml(match[1]));
+  }
+  return normalizeWhitespace(chunks.join("\n"));
+}
+
+function extractDocxParagraphs(xml) {
+  const paragraphs = xml.match(/<w:p\b[\s\S]*?<\/w:p>/g) || [];
+  const text = paragraphs.map(extractXmlText).filter(Boolean);
+  return text.length ? text : [extractXmlText(xml)].filter(Boolean);
+}
+
+function decodeXml(value) {
+  return String(value)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function extractPdfText(raw) {
+  const chunks = [];
+  let match;
+
+  const stringRegex = /\((?:\\.|[^\\)])*\)\s*Tj/g;
+  while ((match = stringRegex.exec(raw))) {
+    chunks.push(decodePdfLiteral(match[0].replace(/\s*Tj$/, "")));
+  }
+
+  const arrayRegex = /\[((?:.|\n|\r)*?)\]\s*TJ/g;
+  while ((match = arrayRegex.exec(raw))) {
+    const inner = match[1];
+    const literals = inner.match(/\((?:\\.|[^\\)])*\)/g) || [];
+    chunks.push(literals.map(decodePdfLiteral).join(""));
+  }
+
+  const hexRegex = /<([0-9A-Fa-f\s]+)>\s*Tj/g;
+  while ((match = hexRegex.exec(raw))) {
+    chunks.push(decodePdfHex(match[1]));
+  }
+
+  return normalizeWhitespace(chunks.join("\n"));
+}
+
+function decodePdfLiteral(value) {
+  const literal = String(value).replace(/^\(/, "").replace(/\)$/, "");
+  return literal
+    .replace(/\\([nrtbf\\()])/g, (_, escaped) => {
+      const map = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "\\": "\\", "(": "(", ")": ")" };
+      return map[escaped] || escaped;
+    })
+    .replace(/\\([0-7]{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
+}
+
+function decodePdfHex(value) {
+  const hex = String(value).replace(/\s+/g, "");
+  if (!hex) return "";
+  const bytes = Buffer.from(hex.length % 2 ? `${hex}0` : hex, "hex");
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const chars = [];
+    for (let index = 2; index + 1 < bytes.length; index += 2) {
+      chars.push(String.fromCharCode(bytes.readUInt16BE(index)));
+    }
+    return chars.join("");
+  }
+  return bytes.toString("latin1");
+}
+
+function chunkText(text, maxLength) {
+  const normalized = normalizeWhitespace(text);
+  if (!normalized) return [];
+  const chunks = [];
+  for (let index = 0; index < normalized.length; index += maxLength) {
+    chunks.push(normalized.slice(index, index + maxLength));
+  }
+  return chunks;
+}
+
+function pagesToText(pages) {
+  return pages
+    .map((page) => `第 ${page.number} 頁：${page.title}\n${page.text}`)
+    .join("\n\n");
+}
+
+function firstLine(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 80) || "";
+}
+
+function normalizeWhitespace(text) {
+  return String(text || "")
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function serveStatic(pathname, res) {
   const safePath = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.normalize(path.join(ROOT, safePath));
@@ -275,12 +570,12 @@ function serveStatic(pathname, res) {
   });
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxLength = 1_000_000) {
   return new Promise((resolve, reject) => {
     let raw = "";
     req.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1_000_000) {
+      if (raw.length > maxLength) {
         req.destroy();
         reject(new Error("Request body too large"));
       }
