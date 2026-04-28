@@ -103,6 +103,7 @@ const state = {
     lastGeneration: null,
     status: "未設定 Gamma API Key，可先匯出 Gamma-ready prompt。",
   },
+  interviewAnswers: "",
   role: "teacher",
   lastLessonInputs: null,
   budget: null,
@@ -166,6 +167,8 @@ function bindDom() {
   dom.context = document.getElementById("contextInput");
   dom.bloomChecks = document.querySelectorAll("#bloomChecks input");
   dom.questionList = document.getElementById("questionList");
+  dom.questionAnswer = document.getElementById("questionAnswerInput");
+  dom.questionAnswerStatus = document.getElementById("questionAnswerStatus");
   dom.timeline = document.getElementById("timeline");
   dom.slideGrid = document.getElementById("slideGrid");
   dom.slideSelect = document.getElementById("slideSelect");
@@ -222,6 +225,7 @@ function bindEvents() {
   });
 
   document.getElementById("askQuestionsBtn").addEventListener("click", renderQuestions);
+  document.getElementById("applyQuestionAnswersBtn").addEventListener("click", regenerateLessonFromInterviewAnswers);
   document.getElementById("sendSlidesToScriptBtn").addEventListener("click", sendSlidesToScriptMaterial);
   document.getElementById("generateAnnualPlanBtn").addEventListener("click", generateAnnualPlan);
   document.getElementById("exportAnnualMdBtn").addEventListener("click", exportAnnualMarkdown);
@@ -265,6 +269,12 @@ function bindEvents() {
     renderDrivePanel();
   });
   dom.roleSelect.addEventListener("change", () => setRole(dom.roleSelect.value));
+  dom.questionAnswer.addEventListener("change", () => {
+    state.interviewAnswers = clean(dom.questionAnswer.value);
+    renderQuestions();
+    markDriveBackupNeeded("AI 追問回答更新");
+    persistState();
+  });
 
   dom.materialFile.addEventListener("change", handleMaterialUpload);
   document.getElementById("generateScriptBtn").addEventListener("click", generateScript);
@@ -329,7 +339,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "exportGammaDeckBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "applyQuestionAnswersBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "exportGammaDeckBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -445,6 +455,7 @@ function getLessonInputs() {
     style: dom.style.value,
     objective: clean(dom.objective.value),
     context: clean(dom.context.value),
+    interviewAnswers: clean(dom.questionAnswer?.value || state.interviewAnswers),
     bloom: selectedBloom.length ? selectedBloom : ["remember", "understand", "analyze"],
   };
 }
@@ -737,6 +748,7 @@ function splitPlanItems(value) {
 
 async function generateLesson() {
   const inputs = getLessonInputs();
+  state.interviewAnswers = inputs.interviewAnswers || "";
   state.lastLessonInputs = inputs;
   setAiBusy(true, "生成教材中");
 
@@ -868,6 +880,28 @@ function renderQuestions() {
       `,
     )
     .join("");
+
+  if (dom.questionAnswer && dom.questionAnswer.value !== state.interviewAnswers) {
+    dom.questionAnswer.value = state.interviewAnswers || "";
+  }
+  if (dom.questionAnswerStatus) {
+    dom.questionAnswerStatus.textContent = state.interviewAnswers
+      ? "已記錄你的補充；按「根據回答再生成」會把答案納入教材與 PPT Prompt。"
+      : "回答上面的追問後，可再生成更貼近你班級、評核與教材目標的版本。";
+  }
+}
+
+async function regenerateLessonFromInterviewAnswers() {
+  const answers = clean(dom.questionAnswer.value);
+  if (!answers) {
+    dom.questionAnswerStatus.textContent = "請先在回答欄輸入你的補充，例如學生背景、評核重點、想避開或加強的內容。";
+    return;
+  }
+  state.interviewAnswers = answers;
+  dom.questionAnswerStatus.textContent = "正在根據你的回答重新生成教材...";
+  logAudit("AI 追問回答", answers.slice(0, 140));
+  await generateLesson();
+  dom.questionAnswerStatus.textContent = "已根據你的回答重新生成教材。";
 }
 
 function renderAll() {
@@ -1418,7 +1452,7 @@ async function generateScript() {
   const material = clean(dom.materialText.value) || buildMaterialFromSlides();
   const inputs = state.lastLessonInputs || getLessonInputs();
   const startPage = clamp(Number(dom.startPage.value) || 1, 1, 999);
-  const minutes = clamp(Number(dom.scriptMinutes.value) || 20, 3, 120);
+  const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
   const budget = calculateBudget(minutes);
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
@@ -1547,7 +1581,17 @@ function normalizeLectureScriptForStudents(script, context) {
     "",
     `目標時間：${context.minutes} 分鐘｜核心講授：${formatNumber(context.budget.core)} 分鐘｜目標字數：約 ${context.targetWords}`,
     "",
-    "這份講稿設計成可由教師口頭講授，也可讓學生課後自行閱讀。內容包含概念解釋、操作脈絡、檢查點與常見錯誤。",
+    "這份講稿設計成可由教師口頭講授，也可讓學生課後自行閱讀。內容會把 PPT / PPT Prompt 轉成完整講義，而不是只保留版面提示。",
+    "",
+    "## Executive Summary",
+    `本堂課會圍繞「${context.inputs.topic}」建立可操作的理解：先連接先備知識，再拆解核心概念，最後用 checkpoint、demo 或評核任務確認學生能否遷移。`,
+    "",
+    "## Assumptions / 需教師確認",
+    context.inputs.interviewAnswers
+      ? `教師追問回答已納入：${context.inputs.interviewAnswers}`
+      : "尚未提供教師追問回答；若教材資訊不足，以下延伸會以「推定補充」處理。",
+    "",
+    "## Slide-by-Slide Full Spoken Script",
   ].join("\n");
 
   if (!normalized) return header;
@@ -1644,7 +1688,7 @@ function renderScript() {
 }
 
 function renderTimeBudget() {
-  const minutes = clamp(Number(dom.scriptMinutes.value) || 20, 3, 120);
+  const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
   const budget = state.budget && Number(state.budget.total) === minutes ? state.budget : calculateBudget(minutes);
   const wpm = state.budget && Number(state.budget.total) === minutes ? state.budget.wpm : calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
@@ -2454,6 +2498,7 @@ function buildProjectPayload(source = "manual") {
     studentQa: state.studentQa,
     qaMetrics: state.qaMetrics,
     gamma: state.gamma,
+    interviewAnswers: state.interviewAnswers,
     role: state.role,
   };
 }
@@ -2490,10 +2535,12 @@ function applyProjectPayload(payload, sourceLabel = "備份") {
     needsTeacher: 0,
   };
   state.gamma.lastGeneration = payload.gamma?.lastGeneration || state.gamma.lastGeneration;
+  state.interviewAnswers = payload.interviewAnswers || payload.inputs?.interviewAnswers || "";
   state.role = payload.role || state.role || "teacher";
   state.lastLessonInputs = payload.inputs || payload.lastLessonInputs || state.lastLessonInputs || getLessonInputs();
 
   setFormInputs(state.lastLessonInputs);
+  if (dom.questionAnswer) dom.questionAnswer.value = state.interviewAnswers;
   dom.materialText.value = payload.materialText || buildMaterialFromSlides();
   dom.assistantContext.value = payload.assistantContext || buildAssistantContext();
   if (state.materialMeta) {
@@ -2862,6 +2909,8 @@ function clearProject() {
     helpful: 0,
     needsTeacher: 0,
   };
+  state.interviewAnswers = "";
+  if (dom.questionAnswer) dom.questionAnswer.value = "";
   state.role = "teacher";
   state.lastLessonInputs = null;
   state.budget = null;
@@ -2977,9 +3026,10 @@ function buildSlideNotes(event, inputs, bloom, minutes) {
     `教學目的：${event}，預計 ${formatNumber(minutes)} 分鐘。`,
     `學生任務：以「${bloom.verb}」處理「${inputs.topic}」。`,
     `教師講法：用${inputs.style}語氣，先點出 ${inputs.context || "學生目前的理解狀態"}。`,
+    inputs.interviewAnswers ? `教師追問回答：${inputs.interviewAnswers}` : "",
     `內容重點：${bloom.strategy}`,
     `檢核方式：請學生用一句話說明本頁最重要的概念，教師即時標記需補救的答案。`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildPptSlidePrompt({ title, event, inputs, bloom, minutes, activity, sourceNotes }) {
@@ -2991,6 +3041,7 @@ function buildPptSlidePrompt({ title, event, inputs, bloom, minutes, activity, s
 頁面標題：${title}
 教學事件：${event}
 Bloom 層次：${bloom.label}
+${inputs.interviewAnswers ? `教師追問回答與補充：${inputs.interviewAnswers}` : ""}
 
 版面設計：
 - 使用 16:9 professional training deck layout。
@@ -3098,7 +3149,7 @@ function buildAssistantContext() {
     .slice(0, 5)
     .map((slide) => `第 ${slide.number} 頁 ${slide.title}`)
     .join("；");
-  return `課題：${inputs.topic}。對象：${inputs.audience}。學習目標：${inputs.objective}。目前教材：${slideSummary}`;
+  return `課題：${inputs.topic}。對象：${inputs.audience}。學習目標：${inputs.objective}。教師追問回答：${inputs.interviewAnswers || "尚未提供"}。目前教材：${slideSummary}`;
 }
 
 function buildMaterialFromSlides() {
@@ -3399,6 +3450,7 @@ function buildPrompt() {
     `學生對象：${inputs.audience}`,
     `學習目標：${inputs.objective}`,
     `班情：${inputs.context}`,
+    `教師追問回答：${inputs.interviewAnswers || "尚未提供"}`,
     `風格：${inputs.style}`,
     `必須整合 Bloom 層次：${inputs.bloom.map((key) => bloomMap[key].label).join("、")}`,
     "請輸出投影片大綱、講者稿、互動問題、評量方式與可修改版本。",
@@ -3413,6 +3465,8 @@ function setFormInputs(inputs) {
   dom.style.value = inputs.style || "清晰嚴謹";
   dom.objective.value = inputs.objective || "";
   dom.context.value = inputs.context || "";
+  state.interviewAnswers = inputs.interviewAnswers || state.interviewAnswers || "";
+  if (dom.questionAnswer) dom.questionAnswer.value = state.interviewAnswers;
   dom.bloomChecks.forEach((checkbox) => {
     checkbox.checked = (inputs.bloom || []).includes(checkbox.value);
   });
@@ -3432,6 +3486,7 @@ function persistState() {
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
     qaMetrics: state.qaMetrics,
+    interviewAnswers: state.interviewAnswers,
     role: state.role,
     lastLessonInputs: state.lastLessonInputs,
     materialText: dom.materialText.value,
@@ -3459,9 +3514,11 @@ function restoreState() {
     state.studentQa = payload.studentQa || state.studentQa;
     state.qaMetrics = payload.qaMetrics || state.qaMetrics;
     state.gamma.lastGeneration = payload.gamma?.lastGeneration || state.gamma.lastGeneration;
+    state.interviewAnswers = payload.interviewAnswers || payload.lastLessonInputs?.interviewAnswers || "";
     state.role = payload.role || "teacher";
     state.lastLessonInputs = payload.lastLessonInputs || null;
     if (state.lastLessonInputs) setFormInputs(state.lastLessonInputs);
+    if (dom.questionAnswer) dom.questionAnswer.value = state.interviewAnswers;
     dom.materialText.value = payload.materialText || buildMaterialFromSlides();
     dom.assistantContext.value = payload.assistantContext || buildAssistantContext();
     if (state.materialMeta) {

@@ -564,6 +564,26 @@ legend {
   font-size: 0.82rem;
 }
 
+.interview-answer {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.interview-answer textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.compact-actions {
+  margin-top: 10px;
+}
+
+.interview-status {
+  display: block;
+  margin-top: 10px;
+}
+
 .timeline {
   display: grid;
   gap: 8px;

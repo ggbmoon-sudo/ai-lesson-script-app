@@ -355,6 +355,17 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                   <h2>主動追問</h2>
                 </div>
                 <div class="question-list" id="questionList"></div>
+                <label class="interview-answer">
+                  我的回答 / 補充
+                  <textarea id="questionAnswerInput" rows="6" placeholder="例如：學生已學過 Linux 基礎，但 Kubernetes YAML 較弱；CA 會考 kubectl、Service endpoint 與 troubleshooting；請加強 demo 和常見錯誤。"></textarea>
+                </label>
+                <div class="control-bar compact-actions">
+                  <button class="action-button" id="applyQuestionAnswersBtn" type="button">
+                    <span class="button-icon">↻</span>
+                    <span>根據回答再生成</span>
+                  </button>
+                </div>
+                <div class="small-status interview-status" id="questionAnswerStatus">回答上面的追問後，可再生成更貼近班級與評核的版本。</div>
               </section>
 
               <section class="panel">
@@ -405,11 +416,11 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
               <div class="field-row">
                 <label>
                   從第幾頁
-                  <input id="startPageInput" type="number" min="1" value="15" />
+                  <input id="startPageInput" type="number" min="1" value="1" />
                 </label>
                 <label>
                   目標分鐘
-                  <input id="scriptMinutesInput" type="number" min="3" max="120" value="20" />
+                  <input id="scriptMinutesInput" type="number" min="3" max="180" value="60" />
                 </label>
               </div>
 

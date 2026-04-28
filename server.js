@@ -1024,19 +1024,21 @@ function buildLessonPrompt({ inputs }) {
 風格：${inputs.style}
 學習目標：${inputs.objective}
 先備知識與班情：${inputs.context}
+教師已回答的 AI 追問：${inputs.interviewAnswers || "尚未提供"}
 Bloom 層次：${(inputs.bloom || []).join(", ")}
 
 要求：
 1. 用逆向設計思維先對齊成果與評量。
 2. 投影片要對應 Gagne 九大教學事件。
 3. 每頁 notes 必須包含教師可直接使用的講法、互動提示與檢核方式。
-4. questions 是 AI 還需要追問教師的關鍵問題。`;
+4. 若「教師已回答的 AI 追問」有內容，必須明顯反映在投影片重點、活動、評核與 examples 之中。
+5. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
 }
 
 function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, targetWords }) {
   const minimumWords = Math.round(Number(targetWords || 0) * 0.92);
   const maximumWords = Math.round(Number(targetWords || 0) * 1.12);
-  return `請根據教材與目前進度生成「完整講義式課堂講稿」。
+  return `請根據教材與目前進度生成「完整講義式課堂講稿」。這個任務是把 PPT / PPT prompt / 教材文字轉成可直接口說，也可直接派給學生自讀的課堂講稿。
 
 課題：${inputs.topic}
 科目：${inputs.subject}
@@ -1049,18 +1051,70 @@ function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, 
 最低可接受字數：${minimumWords}
 最高建議字數：${maximumWords}
 風格：${inputs.style}
+教師追問回答：${inputs.interviewAnswers || "尚未提供"}
 
 教材內容：
 ${String(material || "").slice(0, 12000)}
 
-要求：
+硬性要求：
 1. 這不是摘要，不是投影片 prompt，也不是只給老師看的提示；請寫成學生自行閱讀也能理解該堂內容的完整講義式講稿。
 2. script 字數必須接近核心講授目標字數，最少 ${minimumWords} 字。不要只產生 1000-2000 字短稿。
-3. 請用清楚段落展開：前情提要、核心概念、操作步驟、例子/比喻、命令或 YAML 解讀、常見錯誤、checkpoint、自學總結。
-4. 若教材是 PPT Prompt，請把 prompt 轉化成可讀講義內容，不要重複「版面設計」「視覺元素」等 prompt 指令。
-5. 不要大量使用「請教師補充」佔位；除非是薪資、最新市場數據、學校政策等必須查證的資料，其他技術概念要直接解釋。
-6. 講稿要可口語朗讀，也要可直接發給學生閱讀。
-7. teachingNotes 只提供教師課前提醒，不要把主要內容放在 teachingNotes。`;
+3. 若教材是 PPT Prompt，請把 prompt 轉化成可讀講義內容，不要重複「版面設計」「視覺元素」等 prompt 指令；要解釋該頁真正要教甚麼。
+4. 若教材有 speaker notes 或頁面 notes，視為高優先輸入；若資訊不足，請標示「推定補充」或「需教師確認」，不要裝作已有來源。
+5. 面向 Higher Diploma / IVE 雲端與系統管理學生：技術密度要實務化，優先使用 Linux、Kubernetes、kubectl、YAML、Ansible、Minikube、EKS、troubleshooting、public endpoint、assessment evidence 等場景。
+6. 不要大量使用「請教師補充」佔位；除非是薪資、最新市場數據、學校政策等必須查證的資料，其他技術概念要直接解釋。
+7. 講稿要可口語朗讀，也要可直接發給學生閱讀。請使用自然繁體中文，英文術語第一次出現時用「中文解釋 + English term」。
+
+script 必須使用以下結構：
+# ${inputs.topic}｜${minutes} 分鐘完整進度講稿
+
+## Executive Summary
+- 用 3-5 點說明本堂課會學到甚麼、為何重要、會如何評核。
+
+## Assumptions / 需教師確認
+- 列出已知、未知、推定補充；不得把不確定內容寫成事實。
+
+## Lecture Map Table
+| Slide/Page | Title | Time Allocation | Cumulative Time | Main Points | Activities | Approx. Script Length |
+
+## Slide-by-Slide Full Spoken Script
+每一頁都要有：
+### Slide/Page {n}: {title}
+- Timestamp: [mm:ss - mm:ss]
+- Estimated time on this slide:
+- Learning objective: 使用可評量 action verb
+- Key concepts:
+- Why this slide matters:
+- Full spoken script:
+  寫成可直接朗讀、也可直接給學生閱讀的完整段落。每頁至少 2-5 段，重要頁可更長。
+- Example(s):
+- Demo / walkthrough suggestion:
+- Teacher questions:
+- Formative assessment prompt:
+- Transition to next slide:
+- Speaker cues:
+- Suggested visuals / diagrams / code snippets to add:
+- Difficulty adjustment:
+  - Core version
+  - Support version
+  - Challenge version
+- Accessibility notes:
+  - Suggested caption-ready text
+  - Alt text for informative visuals
+  - Mark decorative-only visuals when appropriate
+- Source note for teacher:
+  若是推定補充或需要查證，請清楚標示。
+
+## Final Summary and Q&A Prompts
+- 本堂 3 個核心 takeaway
+- 3 個 Q&A prompts
+- 1 個 exit ticket
+
+## Duration Check
+- 明確計算每段時間加總，總長必須 >= ${minutes} 分鐘。
+- 若內容不足，請增加 worked example、demo、checkpoint、常見錯誤、debug path，而不是閒聊填字。
+
+teachingNotes 只提供教師課前提醒，不要把主要內容放在 teachingNotes。`;
 }
 
 function buildAssistantPrompt({ context, question }) {
