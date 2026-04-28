@@ -7,9 +7,11 @@ const { URL } = require("node:url");
 loadEnvFile(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 4173);
+const HOST = process.env.HOST || "0.0.0.0";
 const MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
 const ROOT = __dirname;
 
 const mimeTypes = {
@@ -93,12 +95,16 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         aiEnabled: Boolean(OPENAI_API_KEY),
         model: MODEL,
+        environment: process.env.NODE_ENV || "development",
+        publicBaseUrl: PUBLIC_BASE_URL,
+        googleDriveConfigured: Boolean(GOOGLE_DRIVE_CLIENT_ID),
       });
     }
 
     if (req.method === "GET" && url.pathname === "/api/config") {
       return sendJson(res, 200, {
         googleDriveClientId: GOOGLE_DRIVE_CLIENT_ID,
+        publicBaseUrl: PUBLIC_BASE_URL,
       });
     }
 
@@ -124,9 +130,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const mode = OPENAI_API_KEY ? `AI enabled (${MODEL})` : "local fallback only";
-  console.log(`EduScript AI Studio running at http://localhost:${PORT} - ${mode}`);
+  const url = PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+  console.log(`EduScript AI Studio running at ${url} - ${mode}`);
 });
 
 async function handleAiRequest(req, res, pathname) {

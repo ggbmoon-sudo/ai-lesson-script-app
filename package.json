@@ -5,9 +5,10 @@
   "description": "AI-assisted teaching material and lecture script studio prototype.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check app.js && node --check server.js"
+    "check": "node --check app.js && node --check server.js",
+    "deploy:check": "npm run check"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20 <25"
   }
 }

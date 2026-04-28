@@ -64,6 +64,31 @@ http://localhost:4173
 GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 ```
 
+### 部署版
+
+本 repo 已加入 Render 部署設定：
+
+- `render.yaml`
+- `.node-version`
+- `docs/deployment.md`
+
+Render 會以 Node web service 執行 `server.js`，保留 AI proxy、PPTX 匯出、教材解析與 Google Drive 設定載入功能。部署後要在 Render 設定環境變數，不要把真實 key 提交到 GitHub：
+
+```text
+OPENAI_API_KEY=你的 OpenAI key，可留空
+OPENAI_MODEL=gpt-5.2
+GOOGLE_DRIVE_CLIENT_ID=你的 Google OAuth Client ID
+PUBLIC_BASE_URL=https://你的服務.onrender.com
+```
+
+部署後，記得到 Google OAuth Client 的 Authorized JavaScript origins 加入 Render 網址，例如：
+
+```text
+https://你的服務.onrender.com
+```
+
+詳細步驟見 `docs/deployment.md`。
+
 ### 上傳教材
 
 - 離線模式：支援純文字類檔案，例如 `.txt`、`.md`、`.csv`、`.json`。
@@ -143,8 +168,11 @@ APP 使用 Google Identity Services 取得使用者授權，並以 Drive API `dr
 ├── app.js
 ├── server.js
 ├── package.json
+├── render.yaml
 ├── .env.example
+├── .node-version
 ├── docs/
+│   ├── deployment.md
 │   ├── deep-report-integration.md
 │   └── product-analysis.md
 └── README.md
