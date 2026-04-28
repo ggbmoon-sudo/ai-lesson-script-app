@@ -144,8 +144,12 @@ function bindDom() {
   dom.annualNote = document.getElementById("annualNote");
   dom.annualLectureStatus = document.getElementById("annualLectureStatus");
   dom.annualLecturePlan = document.getElementById("annualLecturePlan");
+  dom.annualTimetableStatus = document.getElementById("annualTimetableStatus");
+  dom.annualTimetable = document.getElementById("annualTimetable");
   dom.annualLabPlan = document.getElementById("annualLabPlan");
   dom.annualAssessmentPlan = document.getElementById("annualAssessmentPlan");
+  dom.annualContentTitle = document.getElementById("annualContentTitle");
+  dom.annualContentOutput = document.getElementById("annualContentOutput");
   dom.lessonForm = document.getElementById("lessonForm");
   dom.topic = document.getElementById("topicInput");
   dom.subject = document.getElementById("subjectInput");
@@ -210,9 +214,11 @@ function bindEvents() {
   });
 
   document.getElementById("askQuestionsBtn").addEventListener("click", renderQuestions);
+  document.getElementById("sendSlidesToScriptBtn").addEventListener("click", sendSlidesToScriptMaterial);
   document.getElementById("generateAnnualPlanBtn").addEventListener("click", generateAnnualPlan);
   document.getElementById("exportAnnualMdBtn").addEventListener("click", exportAnnualMarkdown);
   document.getElementById("exportAnnualJsonBtn").addEventListener("click", exportAnnualJson);
+  document.getElementById("copyAnnualContentBtn").addEventListener("click", copyAnnualGeneratedContent);
   document.getElementById("regenerateSlideBtn").addEventListener("click", regenerateSelectedSlide);
   document.getElementById("loadDemoBtn").addEventListener("click", loadDemoProject);
   document.getElementById("saveVersionBtn").addEventListener("click", saveVersion);
@@ -314,7 +320,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "generateLessonBtn", "regenerateSlideBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -462,6 +468,7 @@ function buildAnnualPlan(inputs) {
   const lectureUnits = lectureTopics.map((topic, index) => buildLectureUnit(topic, index, lectureCount, lectureHoursEach, inputs));
   const labs = labSpecs.map((line, index) => buildLabUnit(line, index, labHoursEach));
   const assessments = buildAssessmentPlan(inputs);
+  const timetable = buildAnnualTimetable({ lectureUnits, labs, assessments, inputs });
   const pptSlides = lectureUnits.reduce((sum, unit) => sum + unit.pptSlides, 0);
 
   return {
@@ -487,6 +494,14 @@ function buildAnnualPlan(inputs) {
     lectureUnits,
     labs,
     assessments,
+    timetable,
+    generatedContent: {
+      title: "Lab / Assessment 內容生成區",
+      markdown: "",
+      type: "",
+      index: null,
+      updatedAt: null,
+    },
     complianceNotes: [
       "CA 筆試題目應使用教師自建、公開授權或 AI 生成後人工審核的原創題；避免使用未授權題庫。",
       "EA Skill Test 保持 no hint；所有 API / Service endpoint 必須 public，並在 rubric 中列明驗收方法。",
@@ -543,6 +558,61 @@ function buildLectureUnit(topic, index, count, hours, inputs) {
     recordingCue: `${Math.round(hours * 60)} 分鐘影片，建議拆成 3 段：概念、demo、exam drill。`,
     duplicateCleanup: "若與前一 deck 重複，只保留 exam angle、demo 差異與 troubleshooting 變體。",
   };
+}
+
+function buildAnnualTimetable({ lectureUnits, labs, assessments, inputs }) {
+  const rows = [];
+
+  lectureUnits.forEach((unit) => {
+    rows.push({
+      week: unit.week,
+      type: "Lecture/PPT",
+      id: unit.id,
+      title: unit.title,
+      hours: unit.hours,
+      output: `${unit.deckName} / ${unit.pptSlides} slides / ${unit.videoMinutes} min video`,
+      owner: "Lecturer",
+      dependency: "先完成 PPT prompt，再錄製影片",
+    });
+  });
+
+  labs.forEach((lab, index) => {
+    const week = Math.min(inputs.weeks, Math.max(2, Math.round(((index + 1) / (labs.length + 1)) * inputs.weeks)));
+    lab.week = week;
+    rows.push({
+      week,
+      type: "CA Lab",
+      id: lab.id,
+      title: lab.title,
+      hours: lab.hours,
+      output: lab.outcome,
+      owner: "Teacher / TA",
+      dependency: index === 0 ? "Lecture L1-L2" : `完成 ${labs[index - 1]?.id || "previous Lab"}`,
+    });
+  });
+
+  assessments.forEach((assessment, index) => {
+    const week = index === 0 ? Math.max(4, Math.round(inputs.weeks * 0.45)) : Math.max(6, Math.round(inputs.weeks * 0.9));
+    assessment.week = week;
+    rows.push({
+      week,
+      type: "Assessment",
+      id: assessment.type,
+      title: assessment.title,
+      hours: assessment.hours,
+      output: assessment.deliverables.join("、"),
+      owner: assessment.type === "EA" ? "#Cyrus / Lecturer" : "Lecturer / TA",
+      dependency: assessment.type === "EA" ? "所有核心 Lab + public endpoint 準備" : "Lab checkpoint 與筆試題庫審核",
+    });
+  });
+
+  return rows.sort((a, b) => a.week - b.week || typeOrder(a.type) - typeOrder(b.type));
+}
+
+function typeOrder(type) {
+  if (type === "Lecture/PPT") return 1;
+  if (type === "CA Lab") return 2;
+  return 3;
 }
 
 function inferLectureFocus(topic) {
@@ -675,9 +745,7 @@ async function generateLesson() {
 
   dom.duration.value = inputs.duration;
   annotateSlidesWithSourceRefs(inputs);
-  dom.materialText.value = state.slides
-    .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
-    .join("\n\n");
+  dom.materialText.value = buildMaterialFromSlides();
   dom.assistantContext.value = buildAssistantContext();
   renderQuestions();
   renderAll();
@@ -704,7 +772,15 @@ function generateLessonLocal(inputs) {
       bloomKey,
       minutes: minutes[index],
       activity: buildActivity(item.event, inputs, bloom),
-      notes: buildSlideNotes(item.event, inputs, bloom, minutes[index]),
+      notes: buildPptSlidePrompt({
+        title,
+        event: item.event,
+        inputs,
+        bloom,
+        minutes: minutes[index],
+        activity: buildActivity(item.event, inputs, bloom),
+        sourceNotes: buildSlideNotes(item.event, inputs, bloom, minutes[index]),
+      }),
     };
   });
 }
@@ -723,7 +799,15 @@ function normalizeAiSlides(slides, inputs) {
       bloomKey,
       minutes: Number(slide.minutes) || fallbackMinutes[index],
       activity: clean(slide.activity) || buildActivity(gagneEvents[index % gagneEvents.length].event, inputs, bloom),
-      notes: clean(slide.notes) || buildSlideNotes(gagneEvents[index % gagneEvents.length].event, inputs, bloom, fallbackMinutes[index]),
+      notes: buildPptSlidePrompt({
+        title: clean(slide.title) || buildSlideTitle(slide.event, inputs.topic, index),
+        event: clean(slide.event) || gagneEvents[index % gagneEvents.length].event,
+        inputs,
+        bloom,
+        minutes: Number(slide.minutes) || fallbackMinutes[index],
+        activity: clean(slide.activity) || buildActivity(gagneEvents[index % gagneEvents.length].event, inputs, bloom),
+        sourceNotes: clean(slide.notes) || buildSlideNotes(gagneEvents[index % gagneEvents.length].event, inputs, bloom, fallbackMinutes[index]),
+      }),
     };
   });
 }
@@ -796,8 +880,12 @@ function renderAnnualPlan() {
     dom.annualNote.textContent = "建議先確認 lecture 小時、Lab 小時與評核小時，再生成全年課程包。";
     dom.annualLectureStatus.textContent = "尚未生成";
     dom.annualLecturePlan.innerHTML = emptyText("尚未生成 Lecture / PPT 清單");
+    dom.annualTimetableStatus.textContent = "尚未生成";
+    dom.annualTimetable.innerHTML = emptyText("尚未生成 Timetable");
     dom.annualLabPlan.innerHTML = emptyText("尚未生成 CA Lab Series");
     dom.annualAssessmentPlan.innerHTML = emptyText("尚未生成 Assessment 規劃");
+    dom.annualContentTitle.textContent = "Lab / Assessment 內容生成區";
+    dom.annualContentOutput.value = "";
     return;
   }
 
@@ -817,6 +905,7 @@ function renderAnnualPlan() {
     <small>${escapeHtml(plan.pptConsolidation.join(" "))}</small>
   `;
   dom.annualLectureStatus.textContent = `${metrics.lectureUnits} decks / ${metrics.recordingHours}h video`;
+  dom.annualTimetableStatus.textContent = `${plan.timetable?.length || 0} items across ${plan.inputs.weeks} weeks`;
   const canEditAnnual = ["teacher", "admin"].includes(state.role);
 
   dom.annualLecturePlan.innerHTML = plan.lectureUnits.map((unit, index) => `
@@ -834,39 +923,297 @@ function renderAnnualPlan() {
     </article>
   `).join("");
 
-  dom.annualLabPlan.innerHTML = plan.labs.map((lab) => `
+  dom.annualTimetable.innerHTML = renderAnnualTimetable(plan.timetable || []);
+
+  dom.annualLabPlan.innerHTML = plan.labs.map((lab, index) => `
     <article class="annual-card">
       <div class="annual-card-head">
         <div>
-          <span>${escapeHtml(lab.id)}｜${lab.hours}h｜${escapeHtml(lab.environment)}</span>
+          <span>${escapeHtml(lab.id)}｜Week ${lab.week || "-"}｜${lab.hours}h｜${escapeHtml(lab.environment)}</span>
           <strong>${escapeHtml(lab.title)}</strong>
         </div>
+        <button class="action-button ghost" type="button" data-lab-content="${index}" ${canEditAnnual ? "" : "disabled"}>生成內容</button>
       </div>
       <p>${escapeHtml(lab.outcome)}</p>
       <small>交付：${escapeHtml(lab.deliverables.join("、"))}</small>
     </article>
   `).join("");
 
-  dom.annualAssessmentPlan.innerHTML = plan.assessments.map((assessment) => `
+  dom.annualAssessmentPlan.innerHTML = plan.assessments.map((assessment, index) => `
     <article class="annual-card">
       <div class="annual-card-head">
         <div>
-          <span>${escapeHtml(assessment.type)}｜${assessment.hours}h｜${escapeHtml(assessment.weight)}</span>
+          <span>${escapeHtml(assessment.type)}｜Week ${assessment.week || "-"}｜${assessment.hours}h｜${escapeHtml(assessment.weight)}</span>
           <strong>${escapeHtml(assessment.title)}</strong>
         </div>
+        <button class="action-button ghost" type="button" data-assessment-content="${index}" ${canEditAnnual ? "" : "disabled"}>生成內容</button>
       </div>
       <p>交付：${escapeHtml(assessment.deliverables.join("、"))}</p>
       <small>${escapeHtml(assessment.rules.join("；"))}</small>
     </article>
   `).join("");
 
+  dom.annualContentTitle.textContent = plan.generatedContent?.title || "Lab / Assessment 內容生成區";
+  dom.annualContentOutput.value = plan.generatedContent?.markdown || "";
+
   dom.annualLecturePlan.querySelectorAll("[data-annual-lecture]").forEach((button) => {
     button.addEventListener("click", () => sendAnnualLectureToBuilder(Number(button.dataset.annualLecture)));
+  });
+  dom.annualLabPlan.querySelectorAll("[data-lab-content]").forEach((button) => {
+    button.addEventListener("click", () => generateLabContent(Number(button.dataset.labContent)));
+  });
+  dom.annualAssessmentPlan.querySelectorAll("[data-assessment-content]").forEach((button) => {
+    button.addEventListener("click", () => generateAssessmentContent(Number(button.dataset.assessmentContent)));
   });
 }
 
 function annualMetric(label, value, hint) {
   return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`;
+}
+
+function renderAnnualTimetable(rows) {
+  if (!rows.length) return emptyText("尚未生成 Timetable");
+  return `
+    <div class="timetable-head">
+      <span>Week</span>
+      <span>Type</span>
+      <span>Item</span>
+      <span>Hours</span>
+      <span>Output / Dependency</span>
+    </div>
+    ${rows
+      .map(
+        (row) => `
+          <div class="timetable-row">
+            <strong>W${escapeHtml(row.week)}</strong>
+            <span class="type-chip ${typeChipClass(row.type)}">${escapeHtml(row.type)}</span>
+            <div>
+              <strong>${escapeHtml(row.id)}｜${escapeHtml(row.title)}</strong>
+              <small>${escapeHtml(row.owner)}</small>
+            </div>
+            <span>${escapeHtml(row.hours)}h</span>
+            <div>
+              <span>${escapeHtml(row.output)}</span>
+              <small>${escapeHtml(row.dependency)}</small>
+            </div>
+          </div>
+        `,
+      )
+      .join("")}
+  `;
+}
+
+function typeChipClass(type) {
+  if (type === "CA Lab") return "lab";
+  if (type === "Assessment") return "assessment";
+  return "lecture";
+}
+
+function generateLabContent(index) {
+  const plan = state.annualPlan;
+  const lab = plan?.labs?.[index];
+  if (!plan || !lab) return;
+  const markdown = buildLabContentMarkdown(lab, plan, index);
+  plan.generatedContent = {
+    title: `${lab.id}｜${lab.title}`,
+    markdown,
+    type: "lab",
+    index,
+    updatedAt: new Date().toISOString(),
+  };
+  lab.generatedContent = markdown;
+  logAudit("Lab 內容生成", `${lab.id} 已生成 instructions / steps / rubric`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("Lab 內容生成");
+  persistState();
+}
+
+function generateAssessmentContent(index) {
+  const plan = state.annualPlan;
+  const assessment = plan?.assessments?.[index];
+  if (!plan || !assessment) return;
+  const markdown = buildAssessmentContentMarkdown(assessment, plan, index);
+  plan.generatedContent = {
+    title: `${assessment.type}｜${assessment.title}`,
+    markdown,
+    type: "assessment",
+    index,
+    updatedAt: new Date().toISOString(),
+  };
+  assessment.generatedContent = markdown;
+  logAudit("Assessment 內容生成", `${assessment.type} 已生成 assessment brief / rubric`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("Assessment 內容生成");
+  persistState();
+}
+
+async function copyAnnualGeneratedContent() {
+  const text = dom.annualContentOutput?.value || "";
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    logAudit("複製", "Lab / Assessment 生成內容已複製");
+  } catch {
+    // Clipboard can be unavailable in some browser contexts.
+  }
+}
+
+function buildLabContentMarkdown(lab, plan, index) {
+  const prevLecture = plan.lectureUnits
+    .filter((unit) => unit.week <= (lab.week || plan.inputs.weeks))
+    .slice(-1)[0] || plan.lectureUnits[index] || plan.lectureUnits[0];
+  const checklist = inferLabChecklist(lab);
+  return `# ${lab.id}: ${lab.title}
+
+## Timetable
+
+- Week: ${lab.week || "-"}
+- Hours: ${lab.hours}
+- Environment: ${lab.environment}
+- Related lecture: ${prevLecture?.id || "N/A"} ${prevLecture?.title || ""}
+
+## Learning Outcomes
+
+1. 完成可重現的 hands-on artifact，並能解釋每個主要指令或 YAML 欄位的用途。
+2. 以截圖、command log、YAML / playbook 證明結果。
+3. 用 80-120 字反思一個錯誤、排查過程與修正方法。
+
+## Student Brief
+
+你需要根據課堂內容完成 ${lab.title}。提交內容必須足夠讓老師或助教在另一台環境重現結果。
+
+## Step-by-step Tasks
+
+${checklist.map((item, itemIndex) => `${itemIndex + 1}. ${item}`).join("\n")}
+
+## Deliverables
+
+${lab.deliverables.map((item) => `- ${item}`).join("\n")}
+
+## Acceptance Criteria
+
+- 指令、YAML 或 playbook 可以重新執行。
+- 截圖能清楚顯示 cluster / workload / endpoint 狀態。
+- 若有 public endpoint，必須列出 URL、測試方法與預期 response。
+- 反思能指出至少一個實際遇到的 error 或 limitation。
+
+## Marking Rubric
+
+${lab.rubric.map((item) => `- ${item}: 25%`).join("\n")}
+
+## Teacher Notes
+
+- 先檢查學生是否理解資源限制，特別是 VM RAM、CPU、storage。
+- 不直接給完整答案；只提示如何閱讀 error、events、logs。
+- 若學生使用 AI 生成指令，必須要求他解釋每個 flag / field。
+`;
+}
+
+function inferLabChecklist(lab) {
+  const text = `${lab.title} ${lab.environment} ${lab.outcome}`.toLowerCase();
+  if (text.includes("ubuntu") || text.includes("vm")) {
+    return [
+      "建立 Ubuntu Server VM，記錄 CPU/RAM/disk 設定，建議 4GB minimum / 8GB preferred。",
+      "設定 SSH、package update、hostname、time sync 與基本 firewall policy。",
+      "安裝 Kubernetes 後續 lab 需要的 prerequisite tools。",
+      "提交 VM readiness screenshot 與 resource usage evidence。",
+    ];
+  }
+  if (text.includes("ansible")) {
+    return [
+      "建立 inventory，清楚標示 control node 與 target nodes。",
+      "撰寫 playbook 安裝 prerequisites、container runtime、kubectl/kubeadm 或指定工具。",
+      "執行 playbook 並保留 idempotency 證據。",
+      "提交 playbook、inventory、執行 log 與 troubleshooting notes。",
+    ];
+  }
+  if (text.includes("ckad")) {
+    return [
+      "以 YAML 建立 workload、config、secret、probe、resource request/limit。",
+      "使用 kubectl 驗證 rollout、logs、describe 與 events。",
+      "完成至少一題 job / cronjob 或 multi-container pattern。",
+      "整理 CKAD 題型對應表與常見錯誤。",
+    ];
+  }
+  if (text.includes("cka")) {
+    return [
+      "建立 Minikube cluster 並驗證 node、namespace、storage 或 networking 狀態。",
+      "完成 service exposure、troubleshooting、resource inspection drill。",
+      "用 kubectl explain / describe / logs 查找問題。",
+      "提交 command log 與 no-hint 解題反思。",
+    ];
+  }
+  if (text.includes("eks") || text.includes("aws")) {
+    return [
+      "使用 AWS Academy learning path 建立或 walkthrough EKS 相關資源。",
+      "識別 managed control plane、node group、IAM integration 的角色。",
+      "部署 sample workload 並公開 service endpoint。",
+      "提交 endpoint 測試、成本/安全注意事項與 cleanup record。",
+    ];
+  }
+  return [
+    "準備指定環境並記錄版本。",
+    "完成核心 Kubernetes artifact。",
+    "驗證狀態、endpoint 或 logs。",
+    "提交 evidence pack 與短答反思。",
+  ];
+}
+
+function buildAssessmentContentMarkdown(assessment, plan) {
+  const isEa = assessment.type === "EA";
+  return `# ${assessment.type}: ${assessment.title}
+
+## Timetable
+
+- Week: ${assessment.week || "-"}
+- Hours: ${assessment.hours}
+- Weight: ${assessment.weight}
+- Related course: ${plan.inputs.moduleTitle}
+
+## Assessment Brief
+
+${isEa
+    ? "學生需要在 no-hint 條件下完成技能實作測驗。所有 API / Service endpoint 必須公開，並能由評核員直接驗收。"
+    : "學生需要完成筆試與 Lab checkpoint，證明自己能理解核心概念並完成可重現的 hands-on artifact。"}
+
+## Student Deliverables
+
+${assessment.deliverables.map((item) => `- ${item}`).join("\n")}
+
+## Task Design
+
+${isEa
+    ? [
+        "1. 提供一個未完整部署的 Kubernetes scenario。",
+        "2. 學生需自行判斷 required resources、YAML、service exposure 與 troubleshooting path。",
+        "3. 不提供 hint；只公布時間、交付格式、rubric 與 endpoint requirement。",
+        "4. 評核員以 public endpoint、kubectl evidence、logs 與 oral check 驗收。",
+      ].join("\n")
+    : [
+        "1. 筆試題目覆蓋 Linux prerequisite、Kubernetes architecture、kubectl / YAML、workload、networking、storage、security。",
+        "2. Lab checkpoint 以 evidence pack 評分，不只看截圖，也看可重現性。",
+        "3. 題目可由 AI 生成草稿，但教師必須審核答案、難度與授課覆蓋度。",
+      ].join("\n")}
+
+## Rubric
+
+- Correctness: 35%
+- Reproducibility: 25%
+- Troubleshooting evidence: 20%
+- Explanation / reflection: 10%
+- Security and cleanup awareness: 10%
+
+## Rules
+
+${assessment.rules.map((item) => `- ${item}`).join("\n")}
+
+## Teacher Checklist
+
+- 確認題目沒有依賴未授課或未授權材料。
+- 確認評分標準在評核前公開。
+- 確認答案與驗收命令已由教師試跑。
+- 保存版本、rubric、sample answer 與 moderation notes。
+`;
 }
 
 async function sendAnnualLectureToBuilder(index) {
@@ -942,12 +1289,13 @@ function renderSlides() {
                 <span>${escapeHtml(slide.event)}</span>
                 <span>${escapeHtml(slide.bloom)}</span>
                 <span>${formatNumber(slide.minutes)} 分</span>
+                <span>PPT Prompt</span>
                 ${slide.sourceRefs?.length ? `<span>來源 ${slide.sourceRefs.length}</span>` : ""}
               </div>
             </div>
             <span class="slide-number">${slide.number}</span>
           </div>
-          <textarea data-slide-notes="${index}" rows="7">${escapeHtml(slide.notes)}</textarea>
+          <textarea data-slide-notes="${index}" rows="10" aria-label="第 ${slide.number} 頁 PPT prompt">${escapeHtml(slide.notes)}</textarea>
         </article>
       `,
     )
@@ -997,7 +1345,7 @@ function regenerateSelectedSlide() {
       .join("\n");
   }
 
-  slide.notes = `${slide.notes}\n\n依據修改意見：「${feedback}」\n${additions.length ? additions.join("\n") : "調整方向：降低抽象詞彙，增加明確步驟與教師口語提示。"}`;
+  slide.notes = updatePptPromptWithFeedback(slide, feedback, additions);
   slide.activity = feedback;
   logAudit("局部修改", `第 ${slide.number} 頁依教師意見更新：${feedback}`);
   dom.slideFeedback.value = "";
@@ -2277,6 +2625,70 @@ function buildSlideNotes(event, inputs, bloom, minutes) {
   ].join("\n");
 }
 
+function buildPptSlidePrompt({ title, event, inputs, bloom, minutes, activity, sourceNotes }) {
+  const visual = inferPptVisualPrompt(title, inputs.topic, event);
+  return `PPT 生成 Prompt
+
+目標：為「${inputs.topic}」製作一頁 ${formatNumber(minutes)} 分鐘教學投影片，對象是 ${inputs.audience}。
+
+頁面標題：${title}
+教學事件：${event}
+Bloom 層次：${bloom.label}
+
+版面設計：
+- 使用 16:9 professional training deck layout。
+- 左側放核心概念或流程，右側放 demo / diagram / checklist。
+- 每頁只放 1 個主訊息，不要堆滿文字。
+
+投影片可見文字：
+- 主標題：${title}
+- 3 個重點 bullet，每點不超過 16 個中文字或 10 個英文詞。
+- 1 個學生任務或 checkpoint：${activity}
+
+視覺元素：
+- ${visual}
+- 使用清楚的 icon、流程箭頭、terminal / YAML snippet 或 architecture diagram。
+- 避免裝飾性圖片；畫面要能支援教師解釋與學生重溫。
+
+內容素材：
+${sourceNotes}
+
+互動 / 評核提示：
+- 加入 1 個 quick check question。
+- 若是 CKA/CKAD 相關頁，標示 exam angle 與常見錯誤。
+
+輸出要求：
+- 產生可直接放入 PowerPoint 的 slide content。
+- 不要寫成逐字講稿；講稿會在「進度講稿」頁用生成後的 PPT 再產生。`;
+}
+
+function inferPptVisualPrompt(title, topic, event) {
+  const text = `${title} ${topic} ${event}`.toLowerCase();
+  if (text.includes("linux") || text.includes("ubuntu")) return "畫一個 VM / server readiness checklist，加上 CPU、RAM、network、SSH 狀態標記。";
+  if (text.includes("ansible")) return "畫 control node 指向多個 target nodes 的 automation flow，旁邊放 playbook snippet。";
+  if (text.includes("architecture") || text.includes("control plane")) return "畫 Kubernetes control plane、worker node、etcd、scheduler、API server 的架構圖。";
+  if (text.includes("kubectl") || text.includes("yaml")) return "用 terminal command + YAML block 的雙欄 layout，標出 command 對應的 resource。";
+  if (text.includes("service") || text.includes("ingress") || text.includes("network")) return "畫 client 到 Ingress / Service / Pod 的 traffic path，標出 public endpoint。";
+  if (text.includes("storage") || text.includes("pvc")) return "畫 Pod、PVC、PV、StorageClass 的 binding relationship。";
+  if (text.includes("security") || text.includes("rbac")) return "畫 Subject、Role、RoleBinding、Namespace 的 permission map。";
+  if (text.includes("troubleshooting")) return "畫 diagnose ladder：get、describe、logs、events、exec。";
+  if (text.includes("eks") || text.includes("aws")) return "畫 AWS EKS managed control plane、node group、IAM、public service 的 cloud diagram。";
+  if (text.includes("rancher")) return "畫 multi-cluster dashboard view，突出 enterprise management、policy、monitoring。";
+  return "畫一個由 concept、demo、student checkpoint 組成的三段式教學流程。";
+}
+
+function updatePptPromptWithFeedback(slide, feedback, additions) {
+  return `${slide.notes}
+
+Revision Request
+
+教師修改意見：${feedback}
+PPT 修改方向：
+${additions.length ? additions.map((item) => `- ${item}`).join("\n") : "- 調整 visible text、diagram、checkpoint，使投影片更清楚、更可教。"}
+- 保持這頁是 PPT prompt，不要改成逐字講稿。
+- 如需講稿，請先生成 / 匯出 PPT，再到「進度講稿」頁用 PPT 文字生成每堂講稿。`;
+}
+
 function buildCoreScript(fragments, inputs) {
   const source = fragments.length
     ? fragments
@@ -2336,6 +2748,16 @@ function buildMaterialFromSlides() {
   return state.slides
     .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
     .join("\n\n");
+}
+
+function sendSlidesToScriptMaterial() {
+  if (!state.slides.length) return;
+  dom.materialText.value = buildMaterialFromSlides();
+  dom.assistantContext.value = buildAssistantContext();
+  switchView("script");
+  setMaterialStatus("已把目前 PPT prompts 放入講稿素材。你也可以改為上傳真正生成後的 PPTX，再生成每堂講稿。", true);
+  logAudit("講稿素材", "目前 PPT prompt 已送到進度講稿頁");
+  persistState();
 }
 
 async function parseMaterialFile(file) {
@@ -2549,20 +2971,26 @@ ${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
 - PPT focus：${unit.pptFocus.join("、")}
 - Dedup：${unit.duplicateCleanup}`).join("\n\n");
 
+  const timetable = (plan.timetable || []).map((item) => `| W${item.week} | ${item.type} | ${item.id} | ${item.title} | ${item.hours}h | ${item.output} |`).join("\n");
+
   const labs = plan.labs.map((lab) => `### ${lab.id}. ${lab.title}
 
 - 小時：${lab.hours}
+- Week：${lab.week || "-"}
 - 環境：${lab.environment}
 - 產出：${lab.outcome}
 - 交付：${lab.deliverables.join("、")}
-- Rubric：${lab.rubric.join("、")}`).join("\n\n");
+- Rubric：${lab.rubric.join("、")}
+${lab.generatedContent ? `\n#### 已生成 Lab 內容\n\n${lab.generatedContent}` : ""}`).join("\n\n");
 
   const assessments = plan.assessments.map((item) => `### ${item.type}. ${item.title}
 
 - 小時：${item.hours}
+- Week：${item.week || "-"}
 - 權重：${item.weight}
 - 交付：${item.deliverables.join("、")}
-- 規則：${item.rules.join("；")}`).join("\n\n");
+- 規則：${item.rules.join("；")}
+${item.generatedContent ? `\n#### 已生成 Assessment 內容\n\n${item.generatedContent}` : ""}`).join("\n\n");
 
   return `# ${plan.inputs.moduleTitle}
 
@@ -2581,6 +3009,12 @@ ${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
 ## PPT 去重策略
 
 ${plan.pptConsolidation.map((item) => `- ${item}`).join("\n")}
+
+## Timetable
+
+| Week | Type | ID | Item | Hours | Output |
+| --- | --- | --- | --- | --- | --- |
+${timetable || "| - | - | - | 尚未生成 | - | - |"}
 
 ## Lecture & PPT
 

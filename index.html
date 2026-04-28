@@ -226,6 +226,17 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
             <div class="annual-list" id="annualLecturePlan"></div>
           </section>
 
+          <section class="panel wide-panel">
+            <div class="panel-heading row-heading">
+              <div>
+                <p class="eyebrow">Integrated Timetable</p>
+                <h2>Lecture、CA Lab、Assessment Timetable</h2>
+              </div>
+              <span class="small-status" id="annualTimetableStatus">尚未生成</span>
+            </div>
+            <div class="timetable" id="annualTimetable"></div>
+          </section>
+
           <div class="two-column annual-bottom">
             <section class="panel">
               <div class="panel-heading compact">
@@ -243,6 +254,20 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
               <div class="annual-list" id="annualAssessmentPlan"></div>
             </section>
           </div>
+
+          <section class="panel wide-panel">
+            <div class="panel-heading row-heading">
+              <div>
+                <p class="eyebrow">Content Generator</p>
+                <h2 id="annualContentTitle">Lab / Assessment 內容生成區</h2>
+              </div>
+              <button class="action-button ghost" id="copyAnnualContentBtn" type="button">
+                <span class="button-icon">C</span>
+                <span>複製內容</span>
+              </button>
+            </div>
+            <textarea class="content-editor" id="annualContentOutput" rows="16" placeholder="按 Lab 或 Assessment 卡片的「生成內容」後，會在這裡產生完整 instructions、steps、rubric 與驗收標準。"></textarea>
+          </section>
         </section>
 
         <section class="view" id="builderView" data-view-panel="builder">
@@ -316,6 +341,10 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                   <span class="button-icon">?</span>
                   <span>AI 提問</span>
                 </button>
+                <button class="action-button ghost" id="sendSlidesToScriptBtn" type="button">
+                  <span class="button-icon">↗</span>
+                  <span>送到講稿素材</span>
+                </button>
               </div>
             </form>
 
@@ -342,7 +371,7 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
             <div class="panel-heading row-heading">
               <div>
                 <p class="eyebrow">Editable Slides</p>
-                <h2>教材草稿</h2>
+                <h2>每頁 PPT Prompt 草稿</h2>
               </div>
               <div class="inline-controls">
                 <select id="slideSelect" aria-label="選擇投影片"></select>

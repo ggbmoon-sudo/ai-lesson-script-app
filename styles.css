@@ -847,10 +847,80 @@ legend {
   margin-top: 18px;
 }
 
+.timetable {
+  display: grid;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.timetable-head,
+.timetable-row {
+  display: grid;
+  grid-template-columns: 70px 125px minmax(260px, 1.4fr) 80px minmax(300px, 1.2fr);
+  gap: 10px;
+  min-width: 900px;
+  align-items: center;
+}
+
+.timetable-head {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0 10px 2px;
+  text-transform: uppercase;
+}
+
+.timetable-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 10px;
+}
+
+.timetable-row small,
+.timetable-row span {
+  display: block;
+}
+
+.timetable-row small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 3px;
+}
+
+.type-chip {
+  border-radius: 8px;
+  color: white;
+  display: inline-grid;
+  font-size: 0.78rem;
+  font-weight: 800;
+  min-height: 30px;
+  place-items: center;
+  padding: 5px 8px;
+}
+
+.type-chip.lecture {
+  background: var(--blue);
+}
+
+.type-chip.lab {
+  background: var(--teal);
+}
+
+.type-chip.assessment {
+  background: var(--amber);
+}
+
 .script-editor {
   min-height: 500px;
   font-size: 1rem;
   background: #fffef9;
+}
+
+.content-editor {
+  min-height: 420px;
+  background: #fffef9;
+  font-size: 0.98rem;
 }
 
 .quick-prompts {

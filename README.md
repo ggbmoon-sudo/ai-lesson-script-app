@@ -8,9 +8,11 @@
 
 - 引導式課程訪談：輸入課題、科目、對象、分鐘、學習目標與班情。
 - 全年課程包：一次生成整個學年的 Lecture/PPT、影片錄製小時、CA Lab Series 與 CA/EA 評核規劃。
-- 教材生成：依 Bloom's Taxonomy 與 Gagne's Nine Events 產出可編輯投影片草稿。
+- Timetable：整合 Lecture、CA Lab Series、Assessment 的週次、小時、交付物與依賴關係。
+- Lab / Assessment 內容生成：每個 Lab 與評核項可生成 instructions、steps、rubric 與驗收標準。
+- 教材共創：依 Bloom's Taxonomy 與 Gagne's Nine Events 產出每頁可編輯 PPT Prompt，而不是逐字講稿。
 - 局部再生成：選擇單頁投影片並輸入修改意見。
-- 進度講稿：貼上或上傳教材文字，設定起始頁與分鐘，自動計算 WPM、核心講授時間與講稿。
+- 進度講稿：把已生成 PPT / PPTX / PPT prompt 放入素材區，設定起始頁與分鐘，自動計算 WPM、核心講授時間與每堂講稿。
 - 教材解析：伺服器模式支援 TXT、MD、PPTX、DOCX、PDF 的基礎文字抽取。
 - 課表解析：伺服器模式支援 XLSX 工作表文字抽取，可作為課次/時間表素材。
 - 即時助理：基於目前課堂脈絡生成回答、互動問題、事實查核提示與 exit ticket。

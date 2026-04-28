@@ -324,6 +324,7 @@ ${labs
 - 產出：${lab.outcome}
 - 交付：${(lab.deliverables || []).join("、")}
 - Rubric：${(lab.rubric || []).join("、")}
+${lab.generatedContent ? `\n### Generated Content\n\n${lab.generatedContent}` : ""}
 `,
   )
   .join("\n")}`;
@@ -343,6 +344,7 @@ ${assessments
 - 權重：${item.weight}
 - 交付：${(item.deliverables || []).join("、")}
 - 規則：${(item.rules || []).join("；")}
+${item.generatedContent ? `\n### Generated Content\n\n${item.generatedContent}` : ""}
 `,
   )
   .join("\n")}`;
