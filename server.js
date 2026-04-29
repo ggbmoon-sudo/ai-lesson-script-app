@@ -426,27 +426,27 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname.startsWith("/api/ai/")) {
-      return handleAiRequest(req, res, url.pathname);
+      return await handleAiRequest(req, res, url.pathname);
     }
 
     if (req.method === "POST" && url.pathname === "/api/parse-material") {
-      return handleMaterialParse(req, res);
+      return await handleMaterialParse(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/export-pptx") {
-      return handlePptxExport(req, res);
+      return await handlePptxExport(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/export-course-pack") {
-      return handleCoursePackExport(req, res);
+      return await handleCoursePackExport(req, res);
     }
 
     if (req.method === "POST" && url.pathname === "/api/gamma/generate") {
-      return handleGammaGenerate(req, res);
+      return await handleGammaGenerate(req, res);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/gamma/generation/")) {
-      return handleGammaStatus(req, res, url.pathname);
+      return await handleGammaStatus(req, res, url.pathname);
     }
 
     if (req.method !== "GET") {
@@ -1492,6 +1492,7 @@ async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, in
     ],
     temperature: OPENAI_COMPAT_TEMPERATURE,
     max_tokens: maxTokens,
+    stream: maxTokens > 4096,
     response_format: { type: "json_object" },
   };
 
@@ -1520,6 +1521,18 @@ async function postOpenAiCompatibleChat(endpoint, body) {
     body: JSON.stringify(body),
   });
 
+  if (body.stream) {
+    const raw = await response.text().catch(() => "");
+    if (!response.ok) {
+      const detail = parseOpenAiCompatibleError(raw) || response.statusText;
+      if (body.response_format && /response_format|json_schema|json_object|unsupported|not support/i.test(detail)) {
+        return { retryWithoutResponseFormat: true };
+      }
+      throw new Error(`OpenAI-compatible request failed: ${detail}`);
+    }
+    return parseOpenAiCompatibleStream(raw);
+  }
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = payload.error?.message || payload.error?.status || payload.message || response.statusText;
@@ -1529,6 +1542,47 @@ async function postOpenAiCompatibleChat(endpoint, body) {
     throw new Error(`OpenAI-compatible request failed: ${detail}`);
   }
   return payload;
+}
+
+function parseOpenAiCompatibleError(raw) {
+  try {
+    const payload = JSON.parse(raw || "{}");
+    return payload.error?.message || payload.error?.status || payload.message || "";
+  } catch {
+    return String(raw || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+  }
+}
+
+function parseOpenAiCompatibleStream(raw) {
+  const chunks = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const data = trimmed.slice("data:".length).trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const payload = JSON.parse(data);
+      const choice = payload.choices?.[0] || {};
+      const deltaContent = choice.delta?.content;
+      const messageContent = choice.message?.content;
+      const textContent = choice.text;
+      if (typeof deltaContent === "string") chunks.push(deltaContent);
+      if (typeof messageContent === "string") chunks.push(messageContent);
+      if (typeof textContent === "string") chunks.push(textContent);
+    } catch {
+      // Ignore non-JSON stream keepalive lines.
+    }
+  }
+
+  if (!chunks.length) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return { choices: [{ message: { content: String(raw || "") } }] };
+    }
+  }
+
+  return { choices: [{ message: { content: chunks.join("") } }] };
 }
 
 function getOpenAiCompatibleChatEndpoint() {
