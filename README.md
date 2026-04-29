@@ -80,6 +80,13 @@ OPENAI_COMPAT_MAX_TOKENS=16384
 OPENAI_COMPAT_SCRIPT_MAX_TOKENS=32768
 ```
 
+啟動 `npm start` 後，可用以下 endpoint 自我檢測 AI 設定與 provider 連線狀態；不會回傳 API key 原文：
+
+```bash
+curl "http://localhost:4173/api/ai/diagnostics"
+curl "http://localhost:4173/api/ai/diagnostics?live=1"
+```
+
 `OPENAI_COMPAT_MODEL` 可改為 `qwen3.5-plus`。若 provider 的 endpoint 已包含 `/v1/chat/completions`，可用 `OPENAI_COMPAT_CHAT_URL` 明確指定完整 URL。
 
 講稿生成流程已改為兩階段：先把 PPTX 解析成乾淨的 `slide_json`，每頁保留 `slide_no`、`slide_title`、`slide_subtitle`、`slide_body`、`visual_description`、`speaker_notes`、`source_type` 與 `extracted_from`；再把完整 `slide_json`、課程資訊、訪談資料、學習目標、對象、時長與風格交給 AI provider 生成逐頁教師口語講稿。APP 會避免把 PPT Prompt、compiler prompt、debug log 或版本紀錄混入正式講稿。

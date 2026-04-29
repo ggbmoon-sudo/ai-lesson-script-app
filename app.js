@@ -643,6 +643,10 @@ async function loadAppConfig() {
 }
 
 async function requestAi(type, payload) {
+  return requestAiWithRetry(type, payload, getAiRetryCount(type));
+}
+
+async function requestAiOnce(type, payload) {
   if (window.location.protocol === "file:") {
     throw new Error("AI 生成需要以 node server.js 啟動後使用 http://localhost:4173。");
   }
@@ -673,7 +677,10 @@ async function requestAi(type, payload) {
     if (response.status === 502 && !detail) {
       throw new Error("Codespaces / server 回傳 502。通常是 server 未重啟、port proxy timeout，或單次 AI request 太大。請查看 terminal log。");
     }
-    throw new Error(detail || `AI request failed: ${response.status}`);
+    const aiError = new Error(detail || `AI request failed: ${response.status}`);
+    aiError.status = response.status;
+    if (error.diagnostics) aiError.diagnostics = error.diagnostics;
+    throw aiError;
   }
 
   return response.json();
@@ -949,17 +956,98 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getAiRetryCount(type) {
+  const heavyAiJobs = new Set([
+    "annual-plan",
+    "lesson",
+    "script",
+    "script-revision",
+    "assessment-bank",
+    "lecture-pptx",
+    "lecture-pptx-summary",
+    "lecture-pptx-checklist",
+    "lab-content",
+    "assessment-content",
+  ]);
+  return heavyAiJobs.has(type) ? 2 : 1;
+}
+
+function isRetryableAiError(error) {
+  return /failed to fetch|network|timeout|timed out|502|503|504|econnreset|socket/i.test(error?.message || "");
+}
+
 async function requestAiWithRetry(type, payload, retries = 1) {
+  let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      return await requestAi(type, payload);
+      return await requestAiOnce(type, payload);
     } catch (error) {
-      const retryable = /failed to fetch|network|timeout|502|503|504/i.test(error.message || "");
-      if (!retryable || attempt === retries) throw error;
+      lastError = error;
+      const retryable = isRetryableAiError(error);
+      if (!retryable || attempt === retries) break;
       await wait(900 * (attempt + 1));
     }
   }
-  throw new Error("AI request failed after retry.");
+  throw await enrichAiError(lastError || new Error("AI request failed after retry."), type);
+}
+
+async function enrichAiError(error, type) {
+  const aiError = error instanceof Error ? error : new Error(String(error || "AI request failed."));
+  if (aiError.aiDiagnosticsFormatted) return aiError;
+
+  const diagnostics = aiError.diagnostics || await fetchAiDiagnostics(type, aiError.message);
+  const formatted = formatAiDiagnostics(diagnostics);
+  if (!formatted) return aiError;
+
+  const enriched = new Error(`${aiError.message}\n${formatted}`);
+  enriched.status = aiError.status;
+  enriched.diagnostics = diagnostics;
+  enriched.aiDiagnosticsFormatted = true;
+  return enriched;
+}
+
+async function fetchAiDiagnostics(type, message) {
+  if (window.location.protocol === "file:") return null;
+  try {
+    const params = new URLSearchParams({
+      source: type || "",
+      error: message || "",
+    });
+    const response = await fetch(`/api/ai/diagnostics?${params.toString()}`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+function formatAiDiagnostics(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== "object") return "";
+  const checks = Array.isArray(diagnostics.checks) ? diagnostics.checks : [];
+  const failedChecks = checks.filter((check) => !check.ok);
+  const highlights = failedChecks.length
+    ? failedChecks
+    : checks.filter((check) => ["provider", "token policy", "last error"].includes(check.name));
+  const parts = [];
+
+  if (highlights.length) {
+    parts.push(`AI diagnostics: ${highlights.map(formatAiDiagnosticCheck).join(" | ")}`);
+  }
+  if (diagnostics.probe) {
+    const probe = diagnostics.probe;
+    parts.push(`AI live probe: ${probe.ok ? "OK" : "FAIL"} ${probe.detail || ""}${probe.hint ? ` (${probe.hint})` : ""}`.trim());
+  }
+  const firstHint = checks.map((check) => check.hint).find(Boolean);
+  if (firstHint) parts.push(`Fix hint: ${firstHint}`);
+
+  return parts.join("\n");
+}
+
+function formatAiDiagnosticCheck(check) {
+  const status = check.ok ? "OK" : "FAIL";
+  const detail = check.detail ? `: ${check.detail}` : "";
+  const hint = check.hint ? ` (${check.hint})` : "";
+  return `${status} ${check.name}${detail}${hint}`;
 }
 
 function buildLectureTopics(customTopics, count, weeklyLectures = []) {

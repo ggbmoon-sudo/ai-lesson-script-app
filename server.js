@@ -376,8 +376,10 @@ const slideRevisionSchema = {
 };
 
 const server = http.createServer(async (req, res) => {
+  let requestUrl = null;
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    requestUrl = url;
 
     if (req.method === "GET" && url.pathname === "/api/health") {
       const provider = resolveAiProvider();
@@ -425,6 +427,14 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/ai/diagnostics") {
+      return sendJson(res, 200, await buildAiDiagnostics({
+        live: url.searchParams.get("live") === "1",
+        source: url.searchParams.get("source") || "",
+        errorMessage: url.searchParams.get("error") || "",
+      }));
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/api/ai/")) {
       return await handleAiRequest(req, res, url.pathname);
     }
@@ -455,7 +465,15 @@ const server = http.createServer(async (req, res) => {
 
     return serveStatic(url.pathname, res);
   } catch (error) {
-    return sendJson(res, 500, { error: error.message || "Internal server error" });
+    const isAiPath = requestUrl?.pathname?.startsWith("/api/ai/") && requestUrl.pathname !== "/api/ai/diagnostics";
+    return sendJson(res, classifyHttpError(error), {
+      error: error.message || "Internal server error",
+      diagnostics: isAiPath ? await buildAiDiagnostics({
+        live: false,
+        source: requestUrl.pathname,
+        errorMessage: error.message || "",
+      }) : undefined,
+    });
   }
 });
 
@@ -471,6 +489,10 @@ async function handleAiRequest(req, res, pathname) {
   if (!provider) {
     return sendJson(res, 503, {
       error: "AI generation is required. Set AI_PROVIDER=openai-compatible, OPENAI_COMPAT_BASE_URL, OPENAI_COMPAT_MODEL and OPENAI_COMPAT_API_KEY, then restart the server.",
+      diagnostics: await buildAiDiagnostics({
+        source: pathname,
+        errorMessage: "AI provider is not configured.",
+      }),
     });
   }
 
@@ -1513,17 +1535,21 @@ async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, in
 
 function getOpenAiCompatibleMaxTokens(schemaName) {
   if (schemaName === "lesson_script") return OPENAI_COMPAT_SCRIPT_MAX_TOKENS;
-  const nonStreamingSchemas = new Set([
-    "lecture_pptx_summary",
-    "lecture_pptx_checklist_chunk",
-    "slide_revision",
-    "classroom_assistant",
-    "student_grounded_qa",
-  ]);
-  if (nonStreamingSchemas.has(schemaName)) {
-    return Math.min(OPENAI_COMPAT_MAX_TOKENS, 4096);
-  }
-  return OPENAI_COMPAT_MAX_TOKENS;
+  const caps = {
+    classroom_assistant: 1024,
+    student_grounded_qa: 1024,
+    slide_revision: 2048,
+    lecture_pptx_summary: 2048,
+    lecture_pptx_checklist_chunk: 4096,
+    lesson_plan: 4096,
+    lab_content_markdown: 4096,
+    assessment_content_markdown: 4096,
+    script_revision: 8192,
+    annual_course_plan: 8192,
+    assessment_bank_markdown: 8192,
+    lecture_pptx_generation_plan: 8192,
+  };
+  return Math.min(OPENAI_COMPAT_MAX_TOKENS, caps[schemaName] || 4096);
 }
 
 async function postOpenAiCompatibleChat(endpoint, body) {
@@ -2065,13 +2091,32 @@ function buildGeminiGenerationConfig(schema, schemaName = "") {
     responseMimeType: "application/json",
     responseJsonSchema: toGeminiJsonSchema(schema),
     temperature: GEMINI_TEMPERATURE,
-    maxOutputTokens: schemaName === "lesson_script" ? GEMINI_SCRIPT_MAX_OUTPUT_TOKENS : GEMINI_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: getGeminiMaxOutputTokens(schemaName),
   };
   const thinkingConfig = buildGeminiThinkingConfig();
   if (thinkingConfig) {
     config.thinkingConfig = thinkingConfig;
   }
   return config;
+}
+
+function getGeminiMaxOutputTokens(schemaName) {
+  if (schemaName === "lesson_script") return GEMINI_SCRIPT_MAX_OUTPUT_TOKENS;
+  const caps = {
+    classroom_assistant: 1024,
+    student_grounded_qa: 1024,
+    slide_revision: 2048,
+    lecture_pptx_summary: 2048,
+    lecture_pptx_checklist_chunk: 4096,
+    lesson_plan: 4096,
+    lab_content_markdown: 4096,
+    assessment_content_markdown: 4096,
+    script_revision: 8192,
+    annual_course_plan: 8192,
+    assessment_bank_markdown: 8192,
+    lecture_pptx_generation_plan: 8192,
+  };
+  return Math.min(GEMINI_MAX_OUTPUT_TOKENS, caps[schemaName] || 4096);
 }
 
 function buildGeminiThinkingConfig() {
@@ -2147,6 +2192,166 @@ function normalizeProvider(value) {
 
 function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function classifyHttpError(error) {
+  const message = String(error?.message || "");
+  if (/not configured|required|missing|api key|unauthorized|401/i.test(message)) return 503;
+  if (/rate limit|quota|429/i.test(message)) return 429;
+  if (/timeout|timed out|econnreset|socket|fetch failed|network/i.test(message)) return 504;
+  if (/json|max_tokens|stream=true|response_format|unsupported|did not include|request failed/i.test(message)) return 502;
+  return 500;
+}
+
+async function buildAiDiagnostics({ live = false, source = "", errorMessage = "" } = {}) {
+  const provider = resolveAiProvider();
+  const checks = [
+    {
+      name: "provider",
+      ok: Boolean(provider),
+      detail: provider ? `${provider.name}: ${provider.model}` : `AI_PROVIDER=${AI_PROVIDER || "missing"}`,
+      hint: provider ? "" : "Set AI_PROVIDER and the matching API key, then restart the server.",
+    },
+    {
+      name: "openai-compatible key",
+      ok: Boolean(OPENAI_COMPAT_API_KEY),
+      detail: OPENAI_COMPAT_API_KEY ? "configured" : "missing",
+      hint: OPENAI_COMPAT_API_KEY ? "" : "Set OPENAI_COMPAT_API_KEY in Codespaces Secrets or .env.",
+    },
+    {
+      name: "openai-compatible baseUrl",
+      ok: Boolean(OPENAI_COMPAT_BASE_URL),
+      detail: OPENAI_COMPAT_BASE_URL || "missing",
+      hint: OPENAI_COMPAT_BASE_URL ? "" : "Set OPENAI_COMPAT_BASE_URL, for example https://api.newcoin.top.",
+    },
+    {
+      name: "openai-compatible model",
+      ok: Boolean(OPENAI_COMPAT_MODEL),
+      detail: OPENAI_COMPAT_MODEL || "missing",
+      hint: OPENAI_COMPAT_MODEL ? "" : "Set OPENAI_COMPAT_MODEL, for example qwen3.6-plus.",
+    },
+    {
+      name: "token policy",
+      ok: true,
+      detail: `default=${OPENAI_COMPAT_MAX_TOKENS}, script=${OPENAI_COMPAT_SCRIPT_MAX_TOKENS}, schema caps enabled`,
+      hint: "Short AI jobs stay <=4096 tokens; long AI jobs use streaming when needed.",
+    },
+    {
+      name: "last error",
+      ok: !errorMessage,
+      detail: sanitizeDiagnosticValue(errorMessage || "none"),
+      hint: buildAiErrorHint(errorMessage),
+    },
+  ];
+
+  let probe = null;
+  if (live && provider) {
+    probe = await runAiDiagnosticsProbe(provider);
+  }
+
+  return {
+    ok: checks.every((check) => check.ok) && (!probe || probe.ok),
+    source,
+    configuredProvider: AI_PROVIDER,
+    provider: provider?.name || "",
+    model: provider?.model || "",
+    endpoint: provider?.name === "openai-compatible" ? getOpenAiCompatibleChatEndpoint() : "",
+    checks,
+    probe,
+  };
+}
+
+function buildAiErrorHint(message) {
+  const value = String(message || "");
+  if (!value) return "";
+  if (/max_tokens.*4096.*stream|stream=true/i.test(value)) {
+    return "Pull the latest code and restart; long OpenAI-compatible jobs must stream or use a smaller cap.";
+  }
+  if (/fetch failed|failed to fetch|timeout|timed out|econnreset|socket|network/i.test(value)) {
+    return "The AI endpoint or server connection dropped. Retry after restart; if it repeats, reduce output size.";
+  }
+  if (/401|unauthorized|api key|forbidden|403/i.test(value)) {
+    return "Check OPENAI_COMPAT_API_KEY and the secret visibility for this Codespace.";
+  }
+  if (/model|404/i.test(value)) {
+    return "Check OPENAI_COMPAT_MODEL and base URL.";
+  }
+  if (/json|parse|did not include/i.test(value)) {
+    return "The model returned invalid JSON. Retry or reduce the requested output size.";
+  }
+  if (/rate limit|quota|429/i.test(value)) {
+    return "The provider is rate limited or out of quota. Wait or switch model/provider.";
+  }
+  return "Check /api/ai/diagnostics?live=1 after restarting the server.";
+}
+
+async function runAiDiagnosticsProbe(provider) {
+  try {
+    if (provider.name === "openai-compatible") {
+      const requestBody = {
+        model: OPENAI_COMPAT_MODEL,
+        messages: [
+          { role: "system", content: "Return JSON only." },
+          { role: "user", content: "Return {\"ok\":true,\"provider\":\"openai-compatible\"}." },
+        ],
+        temperature: 0,
+        max_tokens: 128,
+        response_format: { type: "json_object" },
+      };
+      let payload = await postOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), requestBody);
+      if (payload.retryWithoutResponseFormat) {
+        const fallbackBody = { ...requestBody };
+        delete fallbackBody.response_format;
+        payload = await postOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), fallbackBody);
+      }
+      const parsed = parseStructuredJson(extractOpenAiCompatibleText(payload), "OpenAI-compatible diagnostics");
+      return {
+        ok: parsed?.ok === true,
+        detail: parsed?.ok === true ? "OpenAI-compatible live probe passed." : "OpenAI-compatible live probe returned unexpected JSON.",
+      };
+    }
+
+    if (provider.name === "gemini") {
+      const parsed = await createGeminiStructuredResponse({
+        schemaName: "ai_diagnostics",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ok", "provider"],
+          properties: {
+            ok: { type: "boolean" },
+            provider: { type: "string" },
+          },
+        },
+        input: "Return JSON only: {\"ok\":true,\"provider\":\"gemini\"}.",
+      });
+      return {
+        ok: parsed?.ok === true,
+        detail: parsed?.ok === true ? "Gemini live probe passed." : "Gemini live probe returned unexpected JSON.",
+      };
+    }
+
+    return { ok: false, detail: `Unsupported provider: ${provider.name}` };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: sanitizeDiagnosticValue(error.message || "Live probe failed."),
+      hint: buildAiErrorHint(error.message || ""),
+    };
+  }
+}
+
+function sanitizeDiagnosticValue(value) {
+  return String(value || "")
+    .replace(OPENAI_COMPAT_API_KEY ? new RegExp(escapeRegExp(OPENAI_COMPAT_API_KEY), "g") : /$a/, "[redacted]")
+    .replace(GEMINI_API_KEY ? new RegExp(escapeRegExp(GEMINI_API_KEY), "g") : /$a/, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeGammaExport(value) {
