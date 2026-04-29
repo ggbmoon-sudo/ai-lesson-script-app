@@ -78,6 +78,8 @@ OPENAI_COMPAT_MODEL=qwen3.6-plus
 OPENAI_COMPAT_TEMPERATURE=0.25
 OPENAI_COMPAT_MAX_TOKENS=16384
 OPENAI_COMPAT_SCRIPT_MAX_TOKENS=32768
+OPENAI_COMPAT_DISABLE_THINKING=true
+OPENAI_COMPAT_EXTRA_BODY=
 ```
 
 啟動 `npm start` 後，可用以下 endpoint 自我檢測 AI 設定與 provider 連線狀態；不會回傳 API key 原文：
@@ -87,7 +89,7 @@ curl "http://localhost:4173/api/ai/diagnostics"
 curl "http://localhost:4173/api/ai/diagnostics?live=1"
 ```
 
-`OPENAI_COMPAT_MODEL` 可改為 `qwen3.5-plus`。若 provider 的 endpoint 已包含 `/v1/chat/completions`，可用 `OPENAI_COMPAT_CHAT_URL` 明確指定完整 URL。
+`OPENAI_COMPAT_MODEL` 可改為 `qwen3.5-plus`。若 provider 的 endpoint 已包含 `/v1/chat/completions`，可用 `OPENAI_COMPAT_CHAT_URL` 明確指定完整 URL。`OPENAI_COMPAT_DISABLE_THINKING=true` 會預設要求 Qwen 類模型不要把 thinking / reasoning 放入 JSON 任務；若 provider 需要額外 request 欄位，可用 `OPENAI_COMPAT_EXTRA_BODY` 放 JSON object。
 
 講稿生成流程已改為兩階段：先把 PPTX 解析成乾淨的 `slide_json`，每頁保留 `slide_no`、`slide_title`、`slide_subtitle`、`slide_body`、`visual_description`、`speaker_notes`、`source_type` 與 `extracted_from`；再把完整 `slide_json`、課程資訊、訪談資料、學習目標、對象、時長與風格交給 AI provider 生成逐頁教師口語講稿。APP 會避免把 PPT Prompt、compiler prompt、debug log 或版本紀錄混入正式講稿。
 
@@ -108,6 +110,7 @@ AI_PROVIDER=openai-compatible
 OPENAI_COMPAT_BASE_URL=https://api.newcoin.top
 OPENAI_COMPAT_API_KEY=你的 NewCoin API key
 OPENAI_COMPAT_MODEL=qwen3.6-plus
+OPENAI_COMPAT_DISABLE_THINKING=true
 GOOGLE_DRIVE_CLIENT_ID=你的 Google OAuth Client ID
 PUBLIC_BASE_URL=https://你的服務.onrender.com
 ```

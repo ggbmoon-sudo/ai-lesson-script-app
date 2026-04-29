@@ -16,6 +16,8 @@ const OPENAI_COMPAT_MODEL = process.env.OPENAI_COMPAT_MODEL || process.env.AI_MO
 const OPENAI_COMPAT_TEMPERATURE = parseBoundedNumber(process.env.OPENAI_COMPAT_TEMPERATURE, 0.25, 0, 1);
 const OPENAI_COMPAT_MAX_TOKENS = parsePositiveInteger(process.env.OPENAI_COMPAT_MAX_TOKENS, 16384);
 const OPENAI_COMPAT_SCRIPT_MAX_TOKENS = parsePositiveInteger(process.env.OPENAI_COMPAT_SCRIPT_MAX_TOKENS, OPENAI_COMPAT_MAX_TOKENS);
+const OPENAI_COMPAT_DISABLE_THINKING = parseBoolean(process.env.OPENAI_COMPAT_DISABLE_THINKING, true);
+const OPENAI_COMPAT_EXTRA_BODY = parseJsonObject(process.env.OPENAI_COMPAT_EXTRA_BODY);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL || "high");
@@ -395,6 +397,8 @@ const server = http.createServer(async (req, res) => {
               temperature: OPENAI_COMPAT_TEMPERATURE,
               maxTokens: OPENAI_COMPAT_MAX_TOKENS,
               scriptMaxTokens: OPENAI_COMPAT_SCRIPT_MAX_TOKENS,
+              disableThinking: OPENAI_COMPAT_DISABLE_THINKING,
+              extraBodyConfigured: Object.keys(OPENAI_COMPAT_EXTRA_BODY).length > 0,
             }
           : null,
         thinking: provider?.name === "gemini" ? getGeminiThinkingStatus() : null,
@@ -1498,39 +1502,98 @@ async function createStructuredResponse({ provider, schemaName, schema, input })
 async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {
   const endpoint = getOpenAiCompatibleChatEndpoint();
   const maxTokens = getOpenAiCompatibleMaxTokens(schemaName);
-  const requestBody = {
+  const requestBody = buildOpenAiCompatibleRequestBody({ schemaName, schema, input, maxTokens });
+  const firstAttempt = await requestOpenAiCompatibleJson(endpoint, requestBody, "OpenAI-compatible");
+  if (firstAttempt.ok) return firstAttempt.value;
+
+  const retryBody = buildOpenAiCompatibleRequestBody({
+    schemaName,
+    schema,
+    input,
+    maxTokens: getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens),
+    compact: true,
+  });
+  const retryAttempt = await requestOpenAiCompatibleJson(endpoint, retryBody, "OpenAI-compatible retry");
+  if (retryAttempt.ok) return retryAttempt.value;
+
+  const detail = retryAttempt.detail || firstAttempt.detail || "";
+  if (!retryAttempt.text && !firstAttempt.text) {
+    throw new Error(`OpenAI-compatible response did not include message content. ${detail}`.trim());
+  }
+
+  const parseError = retryAttempt.error || firstAttempt.error;
+  throw new Error(`${parseError?.message || "OpenAI-compatible response was not valid JSON."} ${detail}`.trim());
+}
+
+function buildOpenAiCompatibleRequestBody({ schemaName, schema, input, maxTokens, compact = false }) {
+  return {
     model: OPENAI_COMPAT_MODEL,
     messages: [
       {
         role: "system",
-        content: [
-          AI_INSTRUCTIONS,
-          "Return JSON only. Do not include markdown fences, commentary, or keys outside the requested structure.",
-          `Schema name: ${schemaName}`,
-          `JSON schema: ${JSON.stringify(schema)}`,
-        ].join("\n\n"),
+        content: buildOpenAiCompatibleSystemPrompt(schemaName, schema, compact),
       },
       { role: "user", content: input },
     ],
-    temperature: OPENAI_COMPAT_TEMPERATURE,
+    temperature: compact ? 0 : OPENAI_COMPAT_TEMPERATURE,
     max_tokens: maxTokens,
     stream: maxTokens > 4096,
     response_format: { type: "json_object" },
+    ...buildOpenAiCompatibleProviderOptions(),
   };
+}
 
-  let payload = await postOpenAiCompatibleChat(endpoint, requestBody);
-  if (payload.retryWithoutResponseFormat) {
-    const fallbackBody = { ...requestBody };
-    delete fallbackBody.response_format;
-    payload = await postOpenAiCompatibleChat(endpoint, fallbackBody);
+function buildOpenAiCompatibleSystemPrompt(schemaName, schema, compact) {
+  const outputRule = compact
+    ? "Return one compact minified JSON object only. Do not include reasoning, markdown fences, commentary, or blank content. Fill every required key with concise values."
+    : "Return JSON only. Do not include markdown fences, commentary, reasoning, or keys outside the requested structure.";
+
+  return [
+    AI_INSTRUCTIONS,
+    outputRule,
+    "The final assistant message must contain the JSON object in message.content.",
+    `Schema name: ${schemaName}`,
+    `JSON schema: ${JSON.stringify(schema)}`,
+  ].join("\n\n");
+}
+
+function buildOpenAiCompatibleProviderOptions() {
+  const options = { ...OPENAI_COMPAT_EXTRA_BODY };
+  if (OPENAI_COMPAT_DISABLE_THINKING) {
+    if (options.enable_thinking === undefined) options.enable_thinking = false;
+    const existingTemplateOptions =
+      options.chat_template_kwargs && typeof options.chat_template_kwargs === "object" && !Array.isArray(options.chat_template_kwargs)
+        ? options.chat_template_kwargs
+        : {};
+    options.chat_template_kwargs = {
+      ...existingTemplateOptions,
+      enable_thinking: false,
+    };
   }
+  return options;
+}
 
+async function requestOpenAiCompatibleJson(endpoint, requestBody, providerName) {
+  const payload = await requestOpenAiCompatibleChat(endpoint, requestBody);
   const text = extractOpenAiCompatibleText(payload);
-  if (!text) {
-    throw new Error("OpenAI-compatible response did not include message content.");
-  }
+  const detail = summarizeOpenAiCompatiblePayload(payload);
+  if (!text) return { ok: false, text: "", detail };
 
-  return parseStructuredJson(text, "OpenAI-compatible");
+  try {
+    return {
+      ok: true,
+      value: parseStructuredJson(text, providerName),
+      text,
+      detail,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      text,
+      detail,
+      error,
+    };
+  }
 }
 
 function getOpenAiCompatibleMaxTokens(schemaName) {
@@ -1539,7 +1602,7 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
     classroom_assistant: 1024,
     student_grounded_qa: 1024,
     slide_revision: 2048,
-    lecture_pptx_summary: 2048,
+    lecture_pptx_summary: 1024,
     lecture_pptx_checklist_chunk: 4096,
     lesson_plan: 4096,
     lab_content_markdown: 4096,
@@ -1550,6 +1613,93 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
     lecture_pptx_generation_plan: 8192,
   };
   return Math.min(OPENAI_COMPAT_MAX_TOKENS, caps[schemaName] || 4096);
+}
+
+function getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens) {
+  const caps = {
+    classroom_assistant: 768,
+    student_grounded_qa: 768,
+    slide_revision: 1024,
+    lecture_pptx_summary: 768,
+    lecture_pptx_checklist_chunk: 2048,
+    lesson_plan: 2048,
+    lab_content_markdown: 2048,
+    assessment_content_markdown: 2048,
+    script_revision: 4096,
+    annual_course_plan: 4096,
+    assessment_bank_markdown: 4096,
+    lecture_pptx_generation_plan: 4096,
+    lesson_script: 8192,
+  };
+  return Math.min(maxTokens, caps[schemaName] || 2048);
+}
+
+async function requestOpenAiCompatibleChat(endpoint, body) {
+  const attempts = buildOpenAiCompatibleAttempts(body);
+  let lastError = null;
+
+  for (const attempt of attempts) {
+    try {
+      const payload = await postOpenAiCompatibleChat(endpoint, attempt);
+      if (payload.retryWithoutResponseFormat) {
+        lastError = new Error("OpenAI-compatible provider does not support response_format json_object.");
+        continue;
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRetryOpenAiCompatibleAttempt(error)) throw error;
+    }
+  }
+
+  throw lastError || new Error("OpenAI-compatible request failed after compatibility fallbacks.");
+}
+
+function buildOpenAiCompatibleAttempts(body) {
+  const attempts = [];
+  const variants = [
+    body,
+    withoutOpenAiCompatibleResponseFormat(body),
+    stripOpenAiCompatibleProviderOptions(body),
+    stripOpenAiCompatibleProviderOptions(withoutOpenAiCompatibleResponseFormat(body)),
+  ];
+
+  for (const variant of variants) {
+    if (!variant) continue;
+    const signature = [
+      Boolean(variant.response_format),
+      Boolean(variant.enable_thinking !== undefined),
+      Boolean(variant.chat_template_kwargs),
+      Object.keys(variant).length,
+    ].join(":");
+    if (attempts.some((attempt) => attempt.__signature === signature)) continue;
+    Object.defineProperty(variant, "__signature", { value: signature, enumerable: false });
+    attempts.push(variant);
+  }
+
+  return attempts;
+}
+
+function withoutOpenAiCompatibleResponseFormat(body) {
+  if (!body?.response_format) return null;
+  const fallback = { ...body };
+  delete fallback.response_format;
+  return fallback;
+}
+
+function stripOpenAiCompatibleProviderOptions(body) {
+  if (!body) return null;
+  const providerKeys = new Set(["enable_thinking", "chat_template_kwargs", ...Object.keys(OPENAI_COMPAT_EXTRA_BODY)]);
+  if (![...providerKeys].some((key) => Object.prototype.hasOwnProperty.call(body, key))) return null;
+  const fallback = { ...body };
+  for (const key of providerKeys) delete fallback[key];
+  return fallback;
+}
+
+function shouldRetryOpenAiCompatibleAttempt(error) {
+  return /response_format|json_schema|json_object|enable_thinking|chat_template_kwargs|unsupported|not support|unknown|unrecognized|unexpected|invalid parameter|extra fields|not permitted/i.test(
+    String(error?.message || ""),
+  );
 }
 
 async function postOpenAiCompatibleChat(endpoint, body) {
@@ -1596,6 +1746,7 @@ function parseOpenAiCompatibleError(raw) {
 
 function parseOpenAiCompatibleStream(raw) {
   const chunks = [];
+  const reasoningChunks = [];
   for (const line of String(raw || "").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
@@ -1603,19 +1754,23 @@ function parseOpenAiCompatibleStream(raw) {
     if (!data || data === "[DONE]") continue;
     try {
       const payload = JSON.parse(data);
-      const choice = payload.choices?.[0] || {};
-      const deltaContent = choice.delta?.content;
-      const messageContent = choice.message?.content;
-      const textContent = choice.text;
-      if (typeof deltaContent === "string") chunks.push(deltaContent);
-      if (typeof messageContent === "string") chunks.push(messageContent);
-      if (typeof textContent === "string") chunks.push(textContent);
+      const choices = Array.isArray(payload.choices) && payload.choices.length ? payload.choices : [payload];
+      for (const choice of choices) {
+        collectOpenAiCompatibleTextCandidate(chunks, choice.delta?.content);
+        collectOpenAiCompatibleTextCandidate(chunks, choice.message?.content);
+        collectOpenAiCompatibleTextCandidate(chunks, choice.text);
+        collectOpenAiCompatibleTextCandidate(chunks, choice.content);
+        collectOpenAiCompatibleTextCandidate(reasoningChunks, choice.delta?.reasoning_content);
+        collectOpenAiCompatibleTextCandidate(reasoningChunks, choice.message?.reasoning_content);
+        collectOpenAiCompatibleTextCandidate(reasoningChunks, choice.reasoning_content);
+      }
+      collectOpenAiCompatibleTextCandidate(chunks, payload.output_text);
     } catch {
       // Ignore non-JSON stream keepalive lines.
     }
   }
 
-  if (!chunks.length) {
+  if (!chunks.length && !reasoningChunks.length) {
     try {
       return JSON.parse(raw);
     } catch {
@@ -1623,7 +1778,7 @@ function parseOpenAiCompatibleStream(raw) {
     }
   }
 
-  return { choices: [{ message: { content: chunks.join("") } }] };
+  return { choices: [{ message: { content: chunks.join(""), reasoning_content: reasoningChunks.join("") } }] };
 }
 
 function getOpenAiCompatibleChatEndpoint() {
@@ -1634,15 +1789,79 @@ function getOpenAiCompatibleChatEndpoint() {
 }
 
 function extractOpenAiCompatibleText(payload) {
-  const content = payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.text || "";
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => part?.text || part?.content || "")
+  const candidates = [];
+  const reasoningCandidates = [];
+  const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+
+  for (const choice of choices) {
+    collectOpenAiCompatibleTextCandidate(candidates, choice?.message?.content);
+    collectOpenAiCompatibleTextCandidate(candidates, choice?.delta?.content);
+    collectOpenAiCompatibleTextCandidate(candidates, choice?.text);
+    collectOpenAiCompatibleTextCandidate(candidates, choice?.content);
+    collectOpenAiCompatibleTextCandidate(reasoningCandidates, choice?.message?.reasoning_content);
+    collectOpenAiCompatibleTextCandidate(reasoningCandidates, choice?.delta?.reasoning_content);
+    collectOpenAiCompatibleTextCandidate(reasoningCandidates, choice?.reasoning_content);
+  }
+
+  collectOpenAiCompatibleTextCandidate(candidates, payload?.message?.content);
+  collectOpenAiCompatibleTextCandidate(candidates, payload?.output_text);
+  collectOpenAiCompatibleTextCandidate(candidates, payload?.text);
+  collectOpenAiCompatibleTextCandidate(candidates, payload?.content);
+  collectOpenAiCompatibleTextCandidate(reasoningCandidates, payload?.reasoning_content);
+
+  const jsonCandidate = candidates.find(looksLikeJsonText);
+  if (jsonCandidate) return jsonCandidate.trim();
+
+  const textCandidate = candidates.find((candidate) => candidate.trim());
+  if (textCandidate) return textCandidate.trim();
+
+  const reasoningJsonCandidate = reasoningCandidates.find(looksLikeJsonText);
+  return reasoningJsonCandidate ? reasoningJsonCandidate.trim() : "";
+}
+
+function collectOpenAiCompatibleTextCandidate(candidates, value) {
+  const text = openAiCompatibleContentToText(value);
+  if (text) candidates.push(text);
+}
+
+function openAiCompatibleContentToText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(openAiCompatibleContentToText)
       .filter(Boolean)
       .join("\n");
   }
+  if (!value || typeof value !== "object") return "";
+
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.content === "string") return value.content;
+  if (typeof value.output_text === "string") return value.output_text;
+  if (value.text && typeof value.text.value === "string") return value.text.value;
+  if (Array.isArray(value.content)) return openAiCompatibleContentToText(value.content);
   return "";
+}
+
+function looksLikeJsonText(value) {
+  return /[{\[]/.test(String(value || ""));
+}
+
+function summarizeOpenAiCompatiblePayload(payload) {
+  const payloadKeys = payload && typeof payload === "object" ? Object.keys(payload).slice(0, 8).join(",") : "";
+  const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+  const choice = choices[0] || {};
+  const message = choice.message || {};
+  const messageKeys = message && typeof message === "object" ? Object.keys(message).slice(0, 8).join(",") : "";
+  const finishReason = choice.finish_reason || choice.finishReason || "";
+  const contentText =
+    openAiCompatibleContentToText(message.content) ||
+    openAiCompatibleContentToText(choice.text) ||
+    openAiCompatibleContentToText(choice.delta?.content);
+  const reasoningText =
+    openAiCompatibleContentToText(message.reasoning_content) ||
+    openAiCompatibleContentToText(choice.delta?.reasoning_content) ||
+    openAiCompatibleContentToText(choice.reasoning_content);
+  return `Provider payload summary: finish_reason=${finishReason || "none"}, choices=${choices.length}, content=${contentText ? "present" : "empty"}, reasoning=${reasoningText ? "present" : "empty"}, payloadKeys=${payloadKeys || "none"}, messageKeys=${messageKeys || "none"}.`;
 }
 
 async function createGeminiStructuredResponse({ schemaName, schema, input }) {
@@ -2235,8 +2454,14 @@ async function buildAiDiagnostics({ live = false, source = "", errorMessage = ""
     {
       name: "token policy",
       ok: true,
-      detail: `default=${OPENAI_COMPAT_MAX_TOKENS}, script=${OPENAI_COMPAT_SCRIPT_MAX_TOKENS}, schema caps enabled`,
-      hint: "Short AI jobs stay <=4096 tokens; long AI jobs use streaming when needed.",
+      detail: `default=${OPENAI_COMPAT_MAX_TOKENS}, script=${OPENAI_COMPAT_SCRIPT_MAX_TOKENS}, schema caps enabled, disableThinking=${OPENAI_COMPAT_DISABLE_THINKING}`,
+      hint: "Short AI jobs stay <=4096 tokens; long AI jobs use streaming when needed. Qwen thinking is disabled for JSON jobs by default.",
+    },
+    {
+      name: "openai-compatible extra body",
+      ok: true,
+      detail: Object.keys(OPENAI_COMPAT_EXTRA_BODY).length ? "configured" : "not configured",
+      hint: "Optional. Use OPENAI_COMPAT_EXTRA_BODY only if your provider needs extra JSON request fields.",
     },
     {
       name: "last error",
@@ -2278,8 +2503,11 @@ function buildAiErrorHint(message) {
   if (/model|404/i.test(value)) {
     return "Check OPENAI_COMPAT_MODEL and base URL.";
   }
+  if (/did not include message content|content=empty|reasoning=present|blank content/i.test(value)) {
+    return "Provider returned no final JSON content. Pull latest/restart; Qwen thinking is disabled and the app will retry compact JSON.";
+  }
   if (/json|parse|did not include/i.test(value)) {
-    return "The model returned invalid JSON. Retry or reduce the requested output size.";
+    return "The model returned invalid JSON. Pull latest/restart; the app will retry compact JSON with schema caps.";
   }
   if (/rate limit|quota|429/i.test(value)) {
     return "The provider is rate limited or out of quota. Wait or switch model/provider.";
@@ -2293,19 +2521,15 @@ async function runAiDiagnosticsProbe(provider) {
       const requestBody = {
         model: OPENAI_COMPAT_MODEL,
         messages: [
-          { role: "system", content: "Return JSON only." },
+          { role: "system", content: "Return JSON only. Do not include reasoning or markdown fences." },
           { role: "user", content: "Return {\"ok\":true,\"provider\":\"openai-compatible\"}." },
         ],
         temperature: 0,
         max_tokens: 128,
         response_format: { type: "json_object" },
+        ...buildOpenAiCompatibleProviderOptions(),
       };
-      let payload = await postOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), requestBody);
-      if (payload.retryWithoutResponseFormat) {
-        const fallbackBody = { ...requestBody };
-        delete fallbackBody.response_format;
-        payload = await postOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), fallbackBody);
-      }
+      const payload = await requestOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), requestBody);
       const parsed = parseStructuredJson(extractOpenAiCompatibleText(payload), "OpenAI-compatible diagnostics");
       return {
         ok: parsed?.ok === true,
@@ -2413,6 +2637,25 @@ function parsePositiveInteger(value, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return fallback;
   return Math.round(number);
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseJsonObject(value) {
+  const text = String(value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function parseBoundedNumber(value, fallback, min, max) {

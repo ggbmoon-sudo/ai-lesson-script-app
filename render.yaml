@@ -17,6 +17,8 @@ services:
         value: https://api.newcoin.top
       - key: OPENAI_COMPAT_MODEL
         value: qwen3.6-plus
+      - key: OPENAI_COMPAT_DISABLE_THINKING
+        value: "true"
       - key: OPENAI_COMPAT_API_KEY
         sync: false
       - key: GOOGLE_DRIVE_CLIENT_ID
