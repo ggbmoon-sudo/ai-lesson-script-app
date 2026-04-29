@@ -1533,7 +1533,7 @@ function buildOpenAiCompatibleRequestBody({ schemaName, schema, input, maxTokens
         role: "system",
         content: buildOpenAiCompatibleSystemPrompt(schemaName, schema, compact),
       },
-      { role: "user", content: input },
+      { role: "user", content: buildOpenAiCompatibleUserPrompt(input) },
     ],
     temperature: compact ? 0 : OPENAI_COMPAT_TEMPERATURE,
     max_tokens: maxTokens,
@@ -1549,12 +1549,18 @@ function buildOpenAiCompatibleSystemPrompt(schemaName, schema, compact) {
     : "Return JSON only. Do not include markdown fences, commentary, reasoning, or keys outside the requested structure.";
 
   return [
+    OPENAI_COMPAT_DISABLE_THINKING ? "/no_think" : "",
     AI_INSTRUCTIONS,
+    OPENAI_COMPAT_DISABLE_THINKING ? "Disable thinking mode. Do not output Thinking Process, reasoning, analysis, chain-of-thought, or hidden thoughts." : "",
     outputRule,
     "The final assistant message must contain the JSON object in message.content.",
     `Schema name: ${schemaName}`,
     `JSON schema: ${JSON.stringify(schema)}`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildOpenAiCompatibleUserPrompt(input) {
+  return [OPENAI_COMPAT_DISABLE_THINKING ? "/no_think" : "", input].filter(Boolean).join("\n\n");
 }
 
 function buildOpenAiCompatibleProviderOptions() {
@@ -1600,6 +1606,7 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
   if (schemaName === "lesson_script") return OPENAI_COMPAT_SCRIPT_MAX_TOKENS;
   const caps = {
     classroom_assistant: 1024,
+    ai_diagnostics: 256,
     student_grounded_qa: 1024,
     slide_revision: 2048,
     lecture_pptx_summary: 1024,
@@ -1618,6 +1625,7 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
 function getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens) {
   const caps = {
     classroom_assistant: 768,
+    ai_diagnostics: 128,
     student_grounded_qa: 768,
     slide_revision: 1024,
     lecture_pptx_summary: 768,
@@ -2518,19 +2526,19 @@ function buildAiErrorHint(message) {
 async function runAiDiagnosticsProbe(provider) {
   try {
     if (provider.name === "openai-compatible") {
-      const requestBody = {
-        model: OPENAI_COMPAT_MODEL,
-        messages: [
-          { role: "system", content: "Return JSON only. Do not include reasoning or markdown fences." },
-          { role: "user", content: "Return {\"ok\":true,\"provider\":\"openai-compatible\"}." },
-        ],
-        temperature: 0,
-        max_tokens: 128,
-        response_format: { type: "json_object" },
-        ...buildOpenAiCompatibleProviderOptions(),
-      };
-      const payload = await requestOpenAiCompatibleChat(getOpenAiCompatibleChatEndpoint(), requestBody);
-      const parsed = parseStructuredJson(extractOpenAiCompatibleText(payload), "OpenAI-compatible diagnostics");
+      const parsed = await createOpenAiCompatibleStructuredResponse({
+        schemaName: "ai_diagnostics",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ok", "provider"],
+          properties: {
+            ok: { type: "boolean" },
+            provider: { type: "string" },
+          },
+        },
+        input: "Return exactly this JSON object with no other text: {\"ok\":true,\"provider\":\"openai-compatible\"}.",
+      });
       return {
         ok: parsed?.ok === true,
         detail: parsed?.ok === true ? "OpenAI-compatible live probe passed." : "OpenAI-compatible live probe returned unexpected JSON.",
