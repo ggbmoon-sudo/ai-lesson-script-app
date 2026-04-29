@@ -54,6 +54,139 @@ const gagneEvents = [
   { event: "促進保留", weight: 0.08, bloom: "create" },
 ];
 
+const pptTemplateCatalog = {
+  title: {
+    label: "封面",
+    event: "引起動機",
+    bloom: "understand",
+    weight: 0.04,
+    layout: "置中標題 + 底部 metadata bar",
+    visual: "主視覺、課程關鍵字條、清楚課程定位",
+    bodyBudget: 30,
+    notesBudget: 100,
+  },
+  prerequisite: {
+    label: "先備橋接",
+    event: "喚起舊知",
+    bloom: "understand",
+    weight: 0.05,
+    layout: "三欄：已具備 / 今天接上 / 今天不深入",
+    visual: "bridge diagram 或 readiness checklist",
+    bodyBudget: 70,
+    notesBudget: 140,
+  },
+  objectives: {
+    label: "學習目標",
+    event: "提示目標",
+    bloom: "understand",
+    weight: 0.05,
+    layout: "左側 outcomes，右側 Bloom tags",
+    visual: "target ladder / checklist",
+    bodyBudget: 80,
+    notesBudget: 140,
+  },
+  agenda: {
+    label: "議程",
+    event: "提示目標",
+    bloom: "remember",
+    weight: 0.05,
+    layout: "水平時間軸",
+    visual: "timeline / process SmartArt",
+    bodyBudget: 55,
+    notesBudget: 120,
+  },
+  content: {
+    label: "內容講解",
+    event: "呈現內容",
+    bloom: "understand",
+    weight: 0.1,
+    layout: "左概念右重點",
+    visual: "diagram、2-column cards、concept map",
+    bodyBudget: 90,
+    notesBudget: 180,
+  },
+  example: {
+    label: "範例",
+    event: "提供引導",
+    bloom: "apply",
+    weight: 0.09,
+    layout: "左情境右例子",
+    visual: "annotated example / before-after",
+    bodyBudget: 70,
+    notesBudget: 180,
+  },
+  demo: {
+    label: "Demo",
+    event: "提供引導",
+    bloom: "apply",
+    weight: 0.13,
+    layout: "上步驟下輸出",
+    visual: "terminal flow、YAML snippet、expected output",
+    bodyBudget: 65,
+    notesBudget: 240,
+  },
+  exercise: {
+    label: "練習",
+    event: "引發表現",
+    bloom: "apply",
+    weight: 0.09,
+    layout: "三段式：任務 / 限制 / 驗收",
+    visual: "task card、checklist、timer",
+    bodyBudget: 65,
+    notesBudget: 160,
+  },
+  comparison: {
+    label: "比較",
+    event: "呈現內容",
+    bloom: "analyze",
+    weight: 0.09,
+    layout: "comparison matrix / Venn",
+    visual: "左右雙欄角色差異圖",
+    bodyBudget: 80,
+    notesBudget: 180,
+  },
+  pitfalls: {
+    label: "易錯點",
+    event: "提供回饋",
+    bloom: "analyze",
+    weight: 0.08,
+    layout: "錯誤現象 / 先查哪裡 / 修正方向",
+    visual: "diagnose ladder：get、describe、logs、events、exec",
+    bodyBudget: 85,
+    notesBudget: 190,
+  },
+  assessment: {
+    label: "評量",
+    event: "評量學習",
+    bloom: "evaluate",
+    weight: 0.07,
+    layout: "問題在 slide，答案鍵在 notes",
+    visual: "quiz card、rubric、acceptance criteria",
+    bodyBudget: 65,
+    notesBudget: 190,
+  },
+  summary: {
+    label: "總結",
+    event: "促進保留",
+    bloom: "evaluate",
+    weight: 0.04,
+    layout: "三卡片 + next step",
+    visual: "3-key recap",
+    bodyBudget: 45,
+    notesBudget: 110,
+  },
+  references: {
+    label: "參考資料",
+    event: "促進保留",
+    bloom: "remember",
+    weight: 0.02,
+    layout: "official / vendor / exam 分組",
+    visual: "極簡文字與 source priority",
+    bodyBudget: 80,
+    notesBudget: 80,
+  },
+};
+
 const wpmProfiles = {
   informative: { label: "新概念解說", wpm: 132 },
   persuasive: { label: "引起動機", wpm: 154 },
@@ -781,62 +914,235 @@ async function generateLesson() {
 }
 
 function generateLessonLocal(inputs) {
-  state.questions = [];
-  const minutes = distributeMinutes(inputs.duration, gagneEvents.map((item) => item.weight));
+  const deckPlan = buildPptDeckPlan(inputs);
+  state.questions = buildPptInterviewQuestions(inputs);
+  state.slides = deckPlan.map((plan, index) => buildSlideFromDeckPlan(plan, inputs, index));
+}
 
-  state.slides = gagneEvents.map((item, index) => {
-    const bloomKey = inputs.bloom.includes(item.bloom)
-      ? item.bloom
-      : inputs.bloom[index % inputs.bloom.length];
-    const bloom = bloomMap[bloomKey];
-    const title = buildSlideTitle(item.event, inputs.topic, index);
+function normalizeAiSlides(slides, inputs) {
+  const fallbackPlan = buildPptDeckPlan(inputs);
+  const fallbackMinutes = distributeMinutes(inputs.duration, slides.map(() => 1 / Math.max(slides.length, 1)));
+  return slides.map((slide, index) => {
+    const fallback = fallbackPlan[index] || fallbackPlan[index % fallbackPlan.length];
+    const slideType = clean(slide.slideType || slide.type) || fallback?.slideType || "content";
+    const template = pptTemplateCatalog[slideType] || pptTemplateCatalog.content;
+    const bloomKey = inferBloomKey(slide.bloom, inputs, template, index);
+    const bloom = bloomMap[bloomKey] || bloomMap.understand;
+    const title = clean(slide.title) || fallback?.title || buildPptSlideTitle(slideType, inputs, index);
+    const minutes = Number(slide.minutes) || fallback?.minutes || fallbackMinutes[index] || 5;
+    const activity = clean(slide.activity) || buildPptTemplateActivity(slideType, inputs, bloom);
+    const suggestedLayout = clean(slide.suggestedLayout) || template.layout;
+    const suggestedVisual = clean(slide.suggestedVisual) || template.visual || inferPptVisualPrompt(title, inputs.topic, template.event);
+    const factCheckPoints = Array.isArray(slide.factCheckPoints) && slide.factCheckPoints.length
+      ? slide.factCheckPoints
+      : buildPptFactCheckPoints(slideType, inputs);
+    const speakerNotes = clean(slide.speakerNotes) || buildPptSpeakerNotes(slideType, inputs, title, activity);
     return {
       id: cryptoId(),
       number: index + 1,
       title,
-      event: item.event,
-      bloom: bloom.label,
+      event: clean(slide.event) || template.event,
+      bloom: clean(slide.bloom) || bloom.label,
       bloomKey,
-      minutes: minutes[index],
-      activity: buildActivity(item.event, inputs, bloom),
+      minutes,
+      activity,
+      slideType,
+      suggestedLayout,
+      suggestedVisual,
+      speakerNotes,
+      factCheckPoints,
       notes: buildPptSlidePrompt({
         title,
-        event: item.event,
+        event: clean(slide.event) || template.event,
         inputs,
         bloom,
-        minutes: minutes[index],
-        activity: buildActivity(item.event, inputs, bloom),
-        sourceNotes: buildSlideNotes(item.event, inputs, bloom, minutes[index]),
+        minutes,
+        activity,
+        sourceNotes: clean(slide.notes) || buildPptSlideSourceNotes(slideType, inputs, title, activity),
+        slideType,
+        template,
+        suggestedLayout,
+        suggestedVisual,
+        factCheckPoints,
+        speakerNotes,
       }),
     };
   });
 }
 
-function normalizeAiSlides(slides, inputs) {
-  const fallbackMinutes = distributeMinutes(inputs.duration, slides.map(() => 1 / slides.length));
-  return slides.map((slide, index) => {
-    const bloomKey = Object.keys(bloomMap).find((key) => bloomMap[key].label === slide.bloom) || inputs.bloom[index % inputs.bloom.length] || "understand";
-    const bloom = bloomMap[bloomKey] || bloomMap.understand;
+function buildSlideFromDeckPlan(plan, inputs, index) {
+  const template = pptTemplateCatalog[plan.slideType] || pptTemplateCatalog.content;
+  const bloomKey = inferBloomKey(template.bloom, inputs, template, index);
+  const bloom = bloomMap[bloomKey] || bloomMap.understand;
+  const title = plan.title || buildPptSlideTitle(plan.slideType, inputs, index);
+  const activity = buildPptTemplateActivity(plan.slideType, inputs, bloom);
+  const factCheckPoints = buildPptFactCheckPoints(plan.slideType, inputs);
+  const speakerNotes = buildPptSpeakerNotes(plan.slideType, inputs, title, activity);
+  const suggestedVisual = plan.suggestedVisual || template.visual || inferPptVisualPrompt(title, inputs.topic, template.event);
+  return {
+    id: cryptoId(),
+    number: index + 1,
+    title,
+    event: template.event,
+    bloom: bloom.label,
+    bloomKey,
+    minutes: plan.minutes,
+    activity,
+    slideType: plan.slideType,
+    suggestedLayout: plan.suggestedLayout || template.layout,
+    suggestedVisual,
+    speakerNotes,
+    factCheckPoints,
+    notes: buildPptSlidePrompt({
+      title,
+      event: template.event,
+      inputs,
+      bloom,
+      minutes: plan.minutes,
+      activity,
+      sourceNotes: buildPptSlideSourceNotes(plan.slideType, inputs, title, activity),
+      slideType: plan.slideType,
+      template,
+      suggestedLayout: plan.suggestedLayout || template.layout,
+      suggestedVisual,
+      factCheckPoints,
+      speakerNotes,
+    }),
+  };
+}
+
+function buildPptDeckPlan(inputs) {
+  const examOrTech = isExamOrTechnicalCourse(inputs);
+  const selected = new Set(inputs.bloom || []);
+  const longDeck = inputs.duration >= 50 || examOrTech;
+  const sequence = longDeck
+    ? ["title", "prerequisite", "objectives", "agenda", "content", "content", "example", "demo", "comparison", "pitfalls", "exercise", "assessment", "summary", "references"]
+    : ["title", "objectives", "agenda", "content", "example", selected.has("apply") ? "demo" : "content", selected.has("apply") ? "exercise" : "assessment", "summary"];
+
+  if (!sequence.includes("comparison") && (selected.has("analyze") || selected.has("evaluate"))) {
+    sequence.splice(Math.max(4, sequence.length - 2), 0, "comparison");
+  }
+  if (!sequence.includes("assessment") && (selected.has("evaluate") || examOrTech)) {
+    sequence.splice(Math.max(5, sequence.length - 1), 0, "assessment");
+  }
+
+  const weights = sequence.map((type) => pptTemplateCatalog[type]?.weight || 0.08);
+  const minutes = distributeMinutes(inputs.duration, normalizeWeights(weights));
+  return sequence.map((slideType, index) => {
+    const template = pptTemplateCatalog[slideType] || pptTemplateCatalog.content;
     return {
-      id: cryptoId(),
-      number: index + 1,
-      title: clean(slide.title) || buildSlideTitle(slide.event, inputs.topic, index),
-      event: clean(slide.event) || gagneEvents[index % gagneEvents.length].event,
-      bloom: clean(slide.bloom) || bloom.label,
-      bloomKey,
-      minutes: Number(slide.minutes) || fallbackMinutes[index],
-      activity: clean(slide.activity) || buildActivity(gagneEvents[index % gagneEvents.length].event, inputs, bloom),
-      notes: buildPptSlidePrompt({
-        title: clean(slide.title) || buildSlideTitle(slide.event, inputs.topic, index),
-        event: clean(slide.event) || gagneEvents[index % gagneEvents.length].event,
-        inputs,
-        bloom,
-        minutes: Number(slide.minutes) || fallbackMinutes[index],
-        activity: clean(slide.activity) || buildActivity(gagneEvents[index % gagneEvents.length].event, inputs, bloom),
-        sourceNotes: clean(slide.notes) || buildSlideNotes(gagneEvents[index % gagneEvents.length].event, inputs, bloom, fallbackMinutes[index]),
-      }),
+      slideType,
+      title: buildPptSlideTitle(slideType, inputs, index),
+      minutes: minutes[index],
+      suggestedLayout: template.layout,
+      suggestedVisual: template.visual,
     };
   });
+}
+
+function normalizeWeights(weights) {
+  const total = weights.reduce((sum, value) => sum + Number(value || 0), 0) || 1;
+  return weights.map((value) => Number(value || 0) / total);
+}
+
+function isExamOrTechnicalCourse(inputs) {
+  const text = `${inputs.topic} ${inputs.subject} ${inputs.context} ${inputs.objective} ${inputs.interviewAnswers}`.toLowerCase();
+  return /(cka|ckad|kubernetes|kubectl|yaml|eks|linux|ansible|minikube|rancher|exam|assessment|skill test|lab)/i.test(text);
+}
+
+function inferBloomKey(value, inputs, template, index) {
+  const normalized = String(value || "").toLowerCase();
+  const byLabel = Object.keys(bloomMap).find((key) => bloomMap[key].label === value);
+  if (byLabel) return byLabel;
+  const direct = Object.keys(bloomMap).find((key) => normalized.includes(key));
+  if (direct) return direct;
+  if (inputs.bloom?.includes(template.bloom)) return template.bloom;
+  return inputs.bloom?.[index % inputs.bloom.length] || template.bloom || "understand";
+}
+
+function buildPptSlideTitle(slideType, inputs, index) {
+  const titles = {
+    title: inputs.topic,
+    prerequisite: "從先備能力到本課任務",
+    objectives: "本節完成後，你應能",
+    agenda: `${inputs.duration} 分鐘學習路線`,
+    content: index < 5 ? `${inputs.topic} 的用途與限制` : "核心概念與操作邊界",
+    example: "Worked Example：從需求到可驗收結果",
+    demo: "Demo：用 YAML 與 kubectl 交付任務",
+    exercise: "課內練習：完成一個可驗收任務",
+    comparison: "工具相同，責任不同",
+    pitfalls: "常見錯誤與 Troubleshooting 切點",
+    assessment: "Mini Assessment：用考試視角驗收",
+    summary: "三個 Takeaways 與下一步",
+    references: "Official References 與版本查核",
+  };
+  return titles[slideType] || buildSlideTitle(pptTemplateCatalog[slideType]?.event || "呈現內容", inputs.topic, index);
+}
+
+function buildPptTemplateActivity(slideType, inputs, bloom) {
+  const actions = {
+    title: `用一句話說出你期待這堂 ${inputs.topic} 解決的實務問題。`,
+    prerequisite: "快速標記自己已掌握、需要補強、今天暫不深入的能力。",
+    objectives: `把每個 learning objective 轉成可交付或可驗收的 ${bloom.verb} 任務。`,
+    agenda: "用時間軸確認本課的講解、demo、練習與評量位置。",
+    content: `用「定義、用途、限制、常見誤區」拆解 ${inputs.topic}。`,
+    example: "讀一個 worked example，指出情境、做法、結果與誤解。",
+    demo: "跟著命令與 YAML 觀察 expected output，完成驗收檢查點。",
+    exercise: "學生在限定時間內完成任務、交出 evidence 與驗收結果。",
+    comparison: "用角色視角比較 CKA / CKAD 或管理員 / 開發者的成功標準。",
+    pitfalls: "把錯誤現象對應到第一個要查的 command 或 evidence。",
+    assessment: "完成 3 題 mini assessment 或 1 個 performance task。",
+    summary: "用 exit ticket 寫出今天最重要的一個操作判斷。",
+    references: "標記課後要查的 official source 與版本更新位置。",
+  };
+  return actions[slideType] || buildActivity(pptTemplateCatalog[slideType]?.event || "呈現內容", inputs, bloom);
+}
+
+function buildPptSlideSourceNotes(slideType, inputs, title, activity) {
+  const objectives = splitPlanItems(inputs.objective).slice(0, 4);
+  return [
+    `course_json.title: ${inputs.topic}`,
+    `course_json.subject_domain: ${inputs.subject}`,
+    `course_json.audience_profile: ${inputs.audience}`,
+    `course_json.duration_min: ${inputs.duration}`,
+    `course_json.style: ${inputs.style}`,
+    `course_json.objectives: ${objectives.length ? objectives.join("；") : inputs.objective || "需由教師確認"}`,
+    `course_json.prerequisites: ${inputs.context || "未提供；請在 speaker notes 標示假設"}`,
+    `course_json.teacher_interview_answers: ${inputs.interviewAnswers || "尚未提供"}`,
+    `slide_goal: ${title}`,
+    `linked_assessment: ${activity}`,
+  ].join("\n");
+}
+
+function buildPptSpeakerNotes(slideType, inputs, title, activity) {
+  return [
+    `講者備忘稿重點：先說明「${title}」如何服務本課 learning objective，再連到可驗收任務。`,
+    `轉場語：這頁不是孤立概念，下一步要把它變成學生能操作、能驗收、能排錯的行動。`,
+    `互動提示：${activity}`,
+    inputs.interviewAnswers ? `教師補充已納入：${inputs.interviewAnswers}` : "若班級背景不明，請以先備橋接頁做快速診斷。",
+  ].join("\n");
+}
+
+function buildPptFactCheckPoints(slideType, inputs) {
+  const points = [];
+  const text = `${inputs.topic} ${inputs.subject} ${inputs.objective}`.toLowerCase();
+  if (/(cka|ckad)/i.test(text)) points.push("CKA / CKAD 考試定位、版本與 domain 以 Linux Foundation 官方頁為準。");
+  if (/(kubernetes|kubectl|yaml|pod|service|ingress)/i.test(text)) points.push("kubectl、YAML 與 Kubernetes resource 術語以 Kubernetes 官方文件為準。");
+  if (/(eks|aws)/i.test(text)) points.push("EKS、IAM、node group 與 public endpoint 細節以 AWS 官方文件為準。");
+  if (/(ansible)/i.test(text)) points.push("Ansible inventory、managed nodes 與 playbook 用語以 Ansible 官方文件為準。");
+  if (["assessment", "exercise", "demo", "pitfalls"].includes(slideType)) points.push("驗收條件必須可觀察、可重做、可截圖或可用 command 證明。");
+  return points.length ? points : ["如涉及版本、考試權重或校內政策，請教師在發布前查核。"];
+}
+
+function buildPptInterviewQuestions(inputs) {
+  const base = [
+    `這份 deck 最終要學生交出甚麼 evidence：截圖、YAML、kubectl output、反思，還是 LMS quiz？`,
+    `哪些先備知識只是快速橋接，哪些必須在 PPT 內重新教？`,
+    `這堂「${inputs.topic}」最重要的 assessment touchpoint 是 demo、exercise 還是 mini test？`,
+    "有沒有必須使用的 official source、考試版本、工具版本或校本 rubric？",
+    "你想把 references 放在最後一頁，還是放到 appendix / speaker notes？",
+  ];
+  return base.slice(0, 5);
 }
 
 function annotateSlidesWithSourceRefs(inputs) {
@@ -1337,6 +1643,7 @@ function renderSlides() {
               <h3>${escapeHtml(slide.title)}</h3>
               <div class="slide-meta">
                 <span>${escapeHtml(slide.event)}</span>
+                ${slide.slideType ? `<span>${escapeHtml(slide.slideType)}</span>` : ""}
                 <span>${escapeHtml(slide.bloom)}</span>
                 <span>${formatNumber(slide.minutes)} 分</span>
                 <span>PPT Prompt</span>
@@ -2356,12 +2663,19 @@ function buildGammaDeckText() {
   const overview = [
     `# ${inputs.topic || "EduScript lesson"} - Gamma PPT Deck Brief`,
     "",
+    "## Course JSON",
+    "```json",
+    JSON.stringify(buildCourseJsonForPpt(inputs), null, 2),
+    "```",
+    "",
     `Subject: ${inputs.subject || annual?.inputs?.moduleTitle || "N/A"}`,
     `Audience: ${inputs.audience || annual?.inputs?.audience || "N/A"}`,
     `Duration: ${inputs.duration || "N/A"} minutes`,
     `Objective: ${inputs.objective || "N/A"}`,
     "",
     "Create one presentation card per section below. Use the slide prompt as the source of truth for visual layout, visible content, checkpoints, and teaching flow.",
+    "Every card must follow the reusable template fields: slide_title, slide_subtitle, slide_body, speaker_notes, suggested_visual, suggested_layout, presenter_cues, fact_check_points.",
+    "Keep slide_body concise; move answer keys, fallback lines, and demo caveats to speaker_notes.",
   ];
 
   if (annual?.metrics) {
@@ -2381,15 +2695,24 @@ function buildGammaDeckText() {
       "---",
       "",
       `## Card ${index + 1}: ${slide.title || `Slide ${index + 1}`}`,
+      `Slide type: ${slide.slideType || "content"}`,
       `Timing: ${slide.minutes || ""} minutes`,
       `Teaching event: ${slide.event || ""}`,
       `Bloom level: ${slide.bloom || ""}`,
+      `Suggested layout: ${slide.suggestedLayout || ""}`,
+      `Suggested visual: ${slide.suggestedVisual || ""}`,
       "",
       "### Visible Content And Layout Prompt",
       slide.notes || slide.activity || "",
       "",
       "### Teacher Checkpoint",
       slide.activity || "Add one quick concept check question.",
+      "",
+      "### Speaker Notes",
+      slide.speakerNotes || "Put answer key, transitions, demo fallback, and teacher-only caveats here.",
+      "",
+      "### Fact Check Points",
+      (slide.factCheckPoints || []).map((item) => `- ${item}`).join("\n") || "- Check versions and official sources before publishing.",
     ].join("\n");
   });
 
@@ -3032,42 +3355,85 @@ function buildSlideNotes(event, inputs, bloom, minutes) {
   ].filter(Boolean).join("\n");
 }
 
-function buildPptSlidePrompt({ title, event, inputs, bloom, minutes, activity, sourceNotes }) {
-  const visual = inferPptVisualPrompt(title, inputs.topic, event);
-  return `PPT 生成 Prompt
+function buildPptSlidePrompt({
+  title,
+  event,
+  inputs,
+  bloom,
+  minutes,
+  activity,
+  sourceNotes,
+  slideType = "content",
+  template = pptTemplateCatalog.content,
+  suggestedLayout = "",
+  suggestedVisual = "",
+  factCheckPoints = [],
+  speakerNotes = "",
+}) {
+  const visual = suggestedVisual || inferPptVisualPrompt(title, inputs.topic, event);
+  const courseJson = buildCourseJsonForPpt(inputs);
+  return `PPT Slide Compiler Prompt
 
-目標：為「${inputs.topic}」製作一頁 ${formatNumber(minutes)} 分鐘教學投影片，對象是 ${inputs.audience}。
+你是一位資深教學設計師、技術講師與 PowerPoint 編輯。請只用繁體中文輸出，保留必要英文技術名詞、kubectl 指令、YAML 欄位與產品名稱。
 
-頁面標題：${title}
-教學事件：${event}
-Bloom 層次：${bloom.label}
-${inputs.interviewAnswers ? `教師追問回答與補充：${inputs.interviewAnswers}` : ""}
+【課程中繼資料 course_json】
+${JSON.stringify(courseJson, null, 2)}
 
-版面設計：
-- 使用 16:9 professional training deck layout。
-- 左側放核心概念或流程，右側放 demo / diagram / checklist。
-- 每頁只放 1 個主訊息，不要堆滿文字。
+【本頁設定】
+- slide_no: auto
+- slide_type: ${slideType} / ${template.label || "內容講解"}
+- slide_goal: ${title}
+- teaching_event: ${event}
+- bloom_level: ${bloom.label}
+- time_budget_min: ${formatNumber(minutes)}
+- style: ${inputs.style}
+- layout_preference: ${suggestedLayout || template.layout}
+- visual_preference: ${visual}
+- linked_assessment: ${activity}
 
-投影片可見文字：
-- 主標題：${title}
-- 3 個重點 bullet，每點不超過 16 個中文字或 10 個英文詞。
-- 1 個學生任務或 checkpoint：${activity}
+【輸出格式】
+1. slide_title:
+2. slide_subtitle:
+3. slide_body:
+4. speaker_notes:
+5. suggested_visual:
+6. suggested_layout:
+7. presenter_cues:
+8. fact_check_points:
 
-視覺元素：
-- ${visual}
-- 使用清楚的 icon、流程箭頭、terminal / YAML snippet 或 architecture diagram。
-- 避免裝飾性圖片；畫面要能支援教師解釋與學生重溫。
+【硬性限制】
+- slide_body 請控制在 ${template.bodyBudget || 80} 字內；最多 4 個 bullets。
+- speaker_notes 請控制在 ${template.notesBudget || 160} 字內；答案鍵、轉場語、demo fallback 放 notes，不要塞進 slide_body。
+- 每張投影片必須有唯一標題、清楚閱讀順序、足夠留白、18pt 以上字級、sans serif 字型與高對比。
+- 資訊性圖像要提供 alt text；裝飾性圖像請標示 decorative。
+- 不要杜撰版本、考試權重、CLI 指令或 YAML 欄位。
+- 若是 exam-oriented 或技術實作頁，務必標出常考點、易錯點或驗收條件。
+- 若內容資訊不足，請標示「推定補充」或「需教師確認」。
 
-內容素材：
+【本頁素材】
 ${sourceNotes}
 
-互動 / 評核提示：
-- 加入 1 個 quick check question。
-- 若是 CKA/CKAD 相關頁，標示 exam angle 與常見錯誤。
+【建議講者備忘稿】
+${speakerNotes}
 
-輸出要求：
-- 產生可直接放入 PowerPoint 的 slide content。
-- 不要寫成逐字講稿；講稿會在「進度講稿」頁用生成後的 PPT 再產生。`;
+【需查核事項】
+${factCheckPoints.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function buildCourseJsonForPpt(inputs) {
+  return {
+    title: inputs.topic,
+    subject_domain: inputs.subject,
+    audience_profile: inputs.audience,
+    duration_min: inputs.duration,
+    style: inputs.style,
+    objectives: splitPlanItems(inputs.objective).slice(0, 6),
+    prerequisites: splitPlanItems(inputs.context).slice(0, 8),
+    bloom_levels: inputs.bloom || [],
+    teacher_interview_answers: inputs.interviewAnswers || "",
+    source_completeness: inputs.context ? "provided" : "partial_or_missing",
+    workflow: "course interview -> course_json -> template catalog -> slide prompt compiler",
+  };
 }
 
 function inferPptVisualPrompt(title, topic, event) {

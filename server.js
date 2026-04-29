@@ -50,19 +50,29 @@ const lessonSchema = {
     },
     slides: {
       type: "array",
-      minItems: 6,
-      maxItems: 12,
+      minItems: 8,
+      maxItems: 16,
       items: {
         type: "object",
         additionalProperties: false,
         required: ["title", "event", "bloom", "minutes", "activity", "notes"],
         properties: {
           title: { type: "string" },
+          slideType: { type: "string" },
           event: { type: "string" },
           bloom: { type: "string" },
           minutes: { type: "number" },
           activity: { type: "string" },
           notes: { type: "string" },
+          suggestedLayout: { type: "string" },
+          suggestedVisual: { type: "string" },
+          speakerNotes: { type: "string" },
+          factCheckPoints: {
+            type: "array",
+            minItems: 0,
+            maxItems: 5,
+            items: { type: "string" },
+          },
         },
       },
     },
@@ -688,6 +698,11 @@ function createPptxDeck({ inputs, slides, script }) {
     minutes: String(slide.minutes || ""),
     activity: String(slide.activity || ""),
     notes: String(slide.notes || ""),
+    slideType: String(slide.slideType || slide.type || "content"),
+    suggestedLayout: String(slide.suggestedLayout || ""),
+    suggestedVisual: String(slide.suggestedVisual || ""),
+    speakerNotes: String(slide.speakerNotes || ""),
+    factCheckPoints: Array.isArray(slide.factCheckPoints) ? slide.factCheckPoints.map(String) : [],
   }));
 
   const entries = new Map();
@@ -705,7 +720,9 @@ function createPptxDeck({ inputs, slides, script }) {
 
   normalizedSlides.forEach((slide) => {
     entries.set(`ppt/slides/slide${slide.number}.xml`, slideXml(slide, inputs, script));
-    entries.set(`ppt/slides/_rels/slide${slide.number}.xml.rels`, slideRelsXml());
+    entries.set(`ppt/slides/_rels/slide${slide.number}.xml.rels`, slideRelsXml(slide.number));
+    entries.set(`ppt/notesSlides/notesSlide${slide.number}.xml`, notesSlideXml(slide, inputs, script));
+    entries.set(`ppt/notesSlides/_rels/notesSlide${slide.number}.xml.rels`, notesSlideRelsXml(slide.number));
   });
 
   return createZip(Array.from(entries, ([name, content]) => ({
@@ -718,6 +735,9 @@ function contentTypesXml(slideCount) {
   const slideOverrides = Array.from({ length: slideCount }, (_, index) =>
     `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`,
   ).join("");
+  const notesOverrides = Array.from({ length: slideCount }, (_, index) =>
+    `<Override PartName="/ppt/notesSlides/notesSlide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>`,
+  ).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -729,6 +749,7 @@ function contentTypesXml(slideCount) {
   <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
   <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
   ${slideOverrides}
+  ${notesOverrides}
 </Types>`;
 }
 
@@ -790,11 +811,10 @@ function presentationRelsXml(slideCount) {
 
 function slideXml(slide, inputs, script) {
   const title = slide.title;
-  const meta = [slide.event, slide.bloom, slide.minutes && `${slide.minutes} 分鐘`].filter(Boolean).join(" / ");
-  const body = [
-    slide.activity && `活動：${slide.activity}`,
-    ...slide.notes.split(/\r?\n/).filter(Boolean).slice(0, 7),
-  ].filter(Boolean);
+  const meta = [slide.slideType, slide.event, slide.bloom, slide.minutes && `${slide.minutes} 分鐘`].filter(Boolean).join(" / ");
+  const body = buildPptxSlideBody(slide);
+  const visual = slide.suggestedVisual || firstMatchingLine(slide.notes, "suggested_visual") || firstMatchingLine(slide.notes, "visual_preference");
+  const layout = slide.suggestedLayout || firstMatchingLine(slide.notes, "suggested_layout") || firstMatchingLine(slide.notes, "layout_preference");
   const footer = `AI-Assisted Generation / Human review required / ${inputs.subject || ""}`;
   const scriptCue = firstLine(script).slice(0, 100);
 
@@ -805,13 +825,85 @@ function slideXml(slide, inputs, script) {
       ${groupShapeXml()}
       ${textShapeXml(2, "title", 560000, 420000, 11080000, 720000, [title], 3200, true, "173B63")}
       ${textShapeXml(3, "meta", 620000, 1180000, 10860000, 360000, [meta], 1500, false, "5E6F73")}
-      ${textShapeXml(4, "body", 720000, 1780000, 10600000, 3900000, body, 1700, false, "1F2A2E")}
-      ${textShapeXml(5, "script cue", 720000, 5820000, 8400000, 380000, [scriptCue ? `講稿提示：${scriptCue}` : ""], 1100, false, "667276")}
-      ${textShapeXml(6, "footer", 9200000, 6220000, 2500000, 260000, [footer], 850, false, "8A8F91")}
+      ${textShapeXml(4, "body", 720000, 1700000, 6600000, 3600000, body, 1650, false, "1F2A2E")}
+      ${textShapeXml(5, "visual", 7600000, 1700000, 3600000, 2400000, [`視覺：${visual || "diagram / checklist / terminal snippet"}`, `版面：${layout || "內建版型，清楚閱讀順序"}`], 1400, false, "285F63")}
+      ${textShapeXml(7, "accessibility", 7600000, 4300000, 3600000, 900000, ["Alt text: describe insight, not decoration.", "Notes contain answer key and fallback."], 1050, false, "667276")}
+      ${textShapeXml(8, "script cue", 720000, 5820000, 8400000, 380000, [scriptCue ? `講稿提示：${scriptCue}` : "講稿提示：答案鍵與轉場語見 speaker notes"], 1100, false, "667276")}
+      ${textShapeXml(9, "footer", 9200000, 6220000, 2500000, 260000, [footer], 850, false, "8A8F91")}
     </p:spTree>
   </p:cSld>
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
 </p:sld>`;
+}
+
+function buildPptxSlideBody(slide) {
+  const promptBullets = extractPromptFieldLines(slide.notes, "slide_body").slice(0, 4);
+  const body = [
+    slide.activity && `任務：${slide.activity}`,
+    ...promptBullets,
+  ].filter(Boolean);
+  if (body.length >= 3) return body.slice(0, 5);
+
+  const fallback = slide.notes
+    .split(/\r?\n/)
+    .map((line) => normalizeWhitespace(line).replace(/^[-*]\s*/, ""))
+    .filter((line) => line && !/^PPT Slide Compiler Prompt|你是一位|【|```|course_json|slide_no|slide_type|slide_goal|輸出格式|硬性限制/i.test(line))
+    .filter((line) => line.length <= 90)
+    .slice(0, 4);
+  return [...body, ...fallback].slice(0, 5);
+}
+
+function extractPromptFieldLines(text, field) {
+  const lines = String(text || "").split(/\r?\n/);
+  const normalizedField = field.toLowerCase();
+  const normalizePromptKey = (line) => line.trim().toLowerCase().replace(/^\d+\.\s*/, "");
+  const start = lines.findIndex((line) => normalizePromptKey(line).startsWith(`${normalizedField}:`));
+  if (start === -1) return [];
+  const first = lines[start].trim().replace(/^\d+\.\s*/, "").split(":").slice(1).join(":").trim();
+  const output = first ? [first] : [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (/^\d+\.\s*[a-z_ ]+:/i.test(line) || /^[a-z_ ]+:/i.test(line)) break;
+    output.push(line.replace(/^[-*]\s*/, ""));
+    if (output.length >= 4) break;
+  }
+  return output;
+}
+
+function firstMatchingLine(text, pattern) {
+  const match = String(text || "").split(/\r?\n/).find((line) => line.toLowerCase().includes(String(pattern).toLowerCase()));
+  return match ? match.replace(/^[-*\s]*/, "").replace(/^[^:：]+[:：]\s*/, "").slice(0, 120) : "";
+}
+
+function notesSlideXml(slide, inputs, script) {
+  const notes = buildPptxSpeakerNotes(slide, inputs, script);
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      ${groupShapeXml()}
+      ${textShapeXml(2, "notes title", 450000, 420000, 6000000, 520000, [`Speaker Notes｜${slide.title}`], 1900, true, "173B63")}
+      ${textShapeXml(3, "notes body", 520000, 1050000, 5900000, 7200000, notes, 1050, false, "1F2A2E")}
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:notes>`;
+}
+
+function buildPptxSpeakerNotes(slide, inputs, script) {
+  const explicit = slide.speakerNotes || firstMatchingLine(slide.notes, "speaker_notes");
+  const factChecks = (slide.factCheckPoints?.length ? slide.factCheckPoints : extractPromptFieldLines(slide.notes, "fact_check_points")).slice(0, 5);
+  const notes = [
+    explicit || "先說明本頁和 learning objective 的關係，再引導學生完成可驗收任務。",
+    slide.activity ? `課堂互動：${slide.activity}` : "",
+    slide.suggestedLayout ? `版面提示：${slide.suggestedLayout}` : "",
+    slide.suggestedVisual ? `視覺提示：${slide.suggestedVisual}` : "",
+    ...factChecks.map((item) => `查核：${item}`),
+    firstLine(script) ? `講稿連結：${firstLine(script).slice(0, 160)}` : "",
+    "AI-assisted content. Teacher review required before delivery.",
+  ].filter(Boolean);
+  return notes.slice(0, 12);
 }
 
 function groupShapeXml() {
@@ -863,10 +955,18 @@ function paragraphXml(line, size, bold, color) {
 </a:p>`;
 }
 
-function slideRelsXml() {
+function slideRelsXml(slideNumber) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${slideNumber}.xml"/>
+</Relationships>`;
+}
+
+function notesSlideRelsXml(slideNumber) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide${slideNumber}.xml"/>
 </Relationships>`;
 }
 
@@ -1015,7 +1115,7 @@ async function createGeminiStructuredResponse({ schema, input }) {
 }
 
 function buildLessonPrompt({ inputs }) {
-  return `請生成一份專業教材草稿。
+  return `請生成一份專業 PPT deck 生成規格。請把「課程訪談資料」先正規化成 course_json，再用教學設計規則與投影片模板庫編譯成逐頁 PPT Prompt。不要直接把訪談文字改寫成鬆散投影片。
 
 課題：${inputs.topic}
 科目：${inputs.subject}
@@ -1027,12 +1127,25 @@ function buildLessonPrompt({ inputs }) {
 教師已回答的 AI 追問：${inputs.interviewAnswers || "尚未提供"}
 Bloom 層次：${(inputs.bloom || []).join(", ")}
 
+建議流程：
+1. 先建立 course_json：title、subject_domain、audience_profile、duration_min、style、objectives[]、prerequisites[]、bloom_levels[]、external_refs[]、source_completeness。
+2. 用 backward design 對齊 learning objectives、assessment touchpoints 與 instructional strategies。
+3. 依 slide template catalog 選擇頁型：title、prerequisite、objectives、agenda、content、example、demo、exercise、comparison、pitfalls、assessment、summary、references。
+4. 若時長約 60 分鐘、技術實作或 exam-oriented，主 deck 建議 12-14 頁；必須包含 demo、exercise、assessment、comparison 或 pitfalls。
+5. 每頁 notes 必須是可交給 Gamma / PPT AI 的單頁 prompt，包含 slide_title、slide_subtitle、slide_body、speaker_notes、suggested_visual、suggested_layout、presenter_cues、fact_check_points。
+
+投影片可讀性與可及性限制：
+- 每頁必須有唯一標題。
+- slide_body 最多 4 個 bullets，避免大段文字；答案鍵、轉場語、fallback 放 speakerNotes。
+- 建議使用 16:9、內建版型思維、足夠留白、18pt 以上字級、sans serif 字型、高對比。
+- 資訊性圖像需提供 alt text；裝飾性圖像請標示 decorative。
+- 若涉及 CKA/CKAD、kubectl、YAML、EKS、Ansible、Rancher，factCheckPoints 必須提醒以 official docs / exam pages 查核。
+
 要求：
-1. 用逆向設計思維先對齊成果與評量。
-2. 投影片要對應 Gagne 九大教學事件。
-3. 每頁 notes 必須包含教師可直接使用的講法、互動提示與檢核方式。
-4. 若「教師已回答的 AI 追問」有內容，必須明顯反映在投影片重點、活動、評核與 examples 之中。
-5. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
+1. slides 每頁都要包含 slideType、suggestedLayout、suggestedVisual、speakerNotes、factCheckPoints。
+2. event 仍需對應 Gagne 教學事件，bloom 需對應可觀察 learning outcome。
+3. 若「教師已回答的 AI 追問」有內容，必須明顯反映在投影片重點、活動、評核與 examples 之中。
+4. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
 }
 
 function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, targetWords }) {
