@@ -813,6 +813,51 @@ legend {
   color: var(--muted);
 }
 
+.professional-standard {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.professional-summary,
+.professional-grid section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 12px;
+}
+
+.professional-summary {
+  display: grid;
+  gap: 5px;
+}
+
+.professional-summary span,
+.professional-grid span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.professional-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.professional-grid section {
+  min-width: 0;
+}
+
+.professional-grid ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.professional-grid li {
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
 .small-status {
   color: var(--muted);
   font-size: 0.9rem;
@@ -861,6 +906,23 @@ legend {
 
 .annual-card ul {
   padding-left: 20px;
+}
+
+.spec-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.spec-chip-row span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eef5f2;
+  color: var(--teal-dark);
+  display: inline-flex;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 4px 7px;
 }
 
 .annual-bottom {
@@ -929,6 +991,10 @@ legend {
 
 .type-chip.assessment {
   background: var(--amber);
+}
+
+.type-chip.buffer {
+  background: var(--violet);
 }
 
 .script-editor {
@@ -1487,6 +1553,10 @@ legend {
   .slide-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .professional-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1531,6 +1601,7 @@ legend {
   .metric-grid,
   .compare-metrics,
   .annual-metrics,
+  .professional-grid,
   .annual-card-head,
   .governance-grid,
   .drive-backup-item,

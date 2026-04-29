@@ -169,6 +169,22 @@
               </label>
 
               <label>
+                現有每週清單
+                <textarea id="annualWeeklyListInput" rows="8" placeholder="可貼入 Week 1 / 第 1 週 / W1 開頭的現有清單；系統會重整成 Lecture、CA Lab、Assessment、QA 與 PPT 生成架構。"></textarea>
+              </label>
+
+              <div class="field-row">
+                <label>
+                  官方對齊來源
+                  <textarea id="annualOfficialRefsInput" rows="4">CKA official curriculum、CKAD official curriculum、AWS EKS getting started docs、Ansible official docs、minikube official docs</textarea>
+                </label>
+                <label>
+                  資源與環境限制
+                  <textarea id="annualResourceConstraintsInput" rows="4">VM 可用、Ansible 可用、Minikube 可用、AWS EKS 可用或以 Learner Lab / 替代帳號提供</textarea>
+                </label>
+              </div>
+
+              <label>
                 Lecture / PPT 重點
                 <textarea id="annualLectureTopicsInput" rows="5">進階 Linux 銜接、Kubernetes 架構、kubectl 與 YAML、Workloads、Services / Ingress、Storage、Security / RBAC、Troubleshooting、CKA 衝刺、CKAD 衝刺、EKS、Rancher、期末 Skill Test briefing</textarea>
               </label>
@@ -210,9 +226,10 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                 <p class="eyebrow">Year Overview</p>
                 <h2>小時、PPT 與評核總覽</h2>
               </div>
-              <div class="annual-metrics" id="annualMetrics"></div>
-              <div class="annual-note" id="annualNote"></div>
-            </section>
+            <div class="annual-metrics" id="annualMetrics"></div>
+            <div class="annual-note" id="annualNote"></div>
+            <div class="professional-standard" id="annualProfessionalStandard"></div>
+          </section>
           </div>
 
           <section class="panel wide-panel">

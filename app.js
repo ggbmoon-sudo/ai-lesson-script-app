@@ -6,6 +6,61 @@ const GOOGLE_IDENTITY_SCRIPT = "https://accounts.google.com/gsi/client";
 const DEFAULT_CORE_RATIO = 0.85;
 const CHECKPOINT_INTERVAL = 5;
 
+const PROFESSIONAL_COURSE_STANDARD = {
+  flow: [
+    "需求分析與未指定欄位標註",
+    "官方來源 / syllabus 對齊",
+    "年度藍圖與依賴 timetable",
+    "Lecture / PPT slide spec",
+    "CA Lab resources、steps、deliverables、rubric",
+    "Assessment goal、format、weight、rubric",
+    "QA gate、accessibility gate、版本快照",
+    "Markdown / JSON / PPTX / Course Pack 匯出",
+  ],
+  metadataFields: [
+    "course_id",
+    "course_title",
+    "lecture_id",
+    "module_id",
+    "duration_minutes",
+    "slide_target",
+    "template_id",
+    "difficulty",
+    "prerequisites",
+    "resource_profile",
+    "official_alignment",
+    "locale",
+    "version",
+    "model_name",
+    "prompt_hash",
+    "source_snapshot_id",
+    "review_status",
+  ],
+  qaGates: [
+    "Schema completeness",
+    "時間與頁數對齊",
+    "Lecture / Lab / Assessment 依賴一致",
+    "技術步驟可驗收",
+    "教學可用性與 checkpoint 覆蓋",
+    "Accessibility：alt text、唯一標題、閱讀順序、對比",
+    "版本、來源、review status 完整",
+  ],
+  slideSections: [
+    "開場與情境",
+    "學習目標與成功證據",
+    "先修銜接",
+    "概念地圖",
+    "Terminology / CLI / 物件邊界",
+    "標準流程",
+    "Demo walkthrough",
+    "Checkpoint",
+    "常見錯誤",
+    "Guided exercise",
+    "Best practice / Lab bridge",
+    "總結與下週預告",
+  ],
+};
+
 let driveAccessToken = "";
 let driveTokenClient = null;
 let googleIdentityScriptPromise = null;
@@ -281,11 +336,15 @@ function bindDom() {
   dom.annualAssessmentHours = document.getElementById("annualAssessmentHoursInput");
   dom.annualSlidesPerHour = document.getElementById("annualSlidesPerHourInput");
   dom.annualContext = document.getElementById("annualContextInput");
+  dom.annualWeeklyList = document.getElementById("annualWeeklyListInput");
+  dom.annualOfficialRefs = document.getElementById("annualOfficialRefsInput");
+  dom.annualResourceConstraints = document.getElementById("annualResourceConstraintsInput");
   dom.annualLectureTopics = document.getElementById("annualLectureTopicsInput");
   dom.annualLabSpec = document.getElementById("annualLabSpecInput");
   dom.annualAssessmentSpec = document.getElementById("annualAssessmentSpecInput");
   dom.annualMetrics = document.getElementById("annualMetrics");
   dom.annualNote = document.getElementById("annualNote");
+  dom.annualProfessionalStandard = document.getElementById("annualProfessionalStandard");
   dom.annualLectureStatus = document.getElementById("annualLectureStatus");
   dom.annualLecturePlan = document.getElementById("annualLecturePlan");
   dom.annualTimetableStatus = document.getElementById("annualTimetableStatus");
@@ -629,6 +688,9 @@ function getAnnualInputs() {
     assessmentHours: clamp(Number(dom.annualAssessmentHours.value) || 6, 1, 40),
     slidesPerHour: clamp(Number(dom.annualSlidesPerHour.value) || 16, 8, 35),
     context: clean(dom.annualContext.value),
+    weeklyList: splitPlanLines(dom.annualWeeklyList?.value || ""),
+    officialRefs: splitPlanItems(dom.annualOfficialRefs?.value || ""),
+    resourceConstraints: splitPlanItems(dom.annualResourceConstraints?.value || ""),
     lectureTopics: splitPlanItems(dom.annualLectureTopics.value),
     labSpec: splitPlanLines(dom.annualLabSpec.value),
     assessmentSpec: splitPlanLines(dom.annualAssessmentSpec.value),
@@ -646,21 +708,38 @@ function generateAnnualPlan() {
 }
 
 function buildAnnualPlan(inputs) {
-  const lectureCount = Math.max(1, Math.ceil(inputs.lectureHours));
+  const weeklyItems = parseWeeklyList(inputs.weeklyList, inputs);
+  const weeklyLectures = weeklyItems.filter((item) => item.type === "Lecture/PPT");
+  const weeklyLabs = weeklyItems.filter((item) => item.type === "CA Lab");
+  const weeklyAssessments = weeklyItems.filter((item) => item.type === "Assessment");
+  const lectureCount = Math.max(1, weeklyLectures.length || Math.ceil(inputs.lectureHours));
   const lectureHoursEach = inputs.lectureHours / lectureCount;
-  const labSpecs = inputs.labSpec.length ? inputs.labSpec : defaultLabSpecs();
+  const labSpecs = weeklyLabs.length ? weeklyLabs.map(formatWeeklyItemAsSpec) : inputs.labSpec.length ? inputs.labSpec : defaultLabSpecs();
   const labHoursEach = inputs.labHours / labSpecs.length;
-  const lectureTopics = buildLectureTopics(inputs.lectureTopics, lectureCount);
-  const lectureUnits = lectureTopics.map((topic, index) => buildLectureUnit(topic, index, lectureCount, lectureHoursEach, inputs));
+  const lectureTopics = buildLectureTopics(inputs.lectureTopics, lectureCount, weeklyLectures);
+  const lectureUnits = lectureTopics.map((topic, index) => {
+    const weeklyItem = weeklyLectures[index] || null;
+    return buildLectureUnit(topic, index, lectureCount, weeklyItem?.hours || lectureHoursEach, inputs, weeklyItem);
+  });
   const labs = labSpecs.map((line, index) => buildLabUnit(line, index, labHoursEach));
-  const assessments = buildAssessmentPlan(inputs);
-  const timetable = buildAnnualTimetable({ lectureUnits, labs, assessments, inputs });
+  labs.forEach((lab, index) => {
+    const weeklyItem = weeklyLabs[index];
+    if (weeklyItem) {
+      lab.week = weeklyItem.week;
+      lab.sourceWeeklyItem = weeklyItem.raw;
+    }
+  });
+  const assessments = buildAssessmentPlan(inputs, weeklyAssessments);
+  const timetable = weeklyItems.length
+    ? buildTimetableFromWeeklyItems({ weeklyItems, lectureUnits, labs, assessments, inputs })
+    : buildAnnualTimetable({ lectureUnits, labs, assessments, inputs });
   const pptSlides = lectureUnits.reduce((sum, unit) => sum + unit.pptSlides, 0);
 
   return {
     id: cryptoId(),
     generatedAt: new Date().toISOString(),
     inputs,
+    weeklyItems,
     metrics: {
       totalHours: roundOne(inputs.lectureHours + inputs.labHours + inputs.assessmentHours),
       lectureHours: inputs.lectureHours,
@@ -677,6 +756,10 @@ function buildAnnualPlan(inputs) {
       "CKA 重點放在 cluster admin、networking、storage、troubleshooting；CKAD 重點放在 workload、config、probes、jobs。",
       "每 1 小時 lecture 拆成 1 個錄影 batch 與 1 份 PPT deck，方便重錄與後期剪輯。",
     ],
+    professionalStandard: buildProfessionalStandard(inputs, weeklyItems),
+    metadataContract: buildMetadataContract(inputs),
+    qaGates: buildQaGates(inputs),
+    accessibilityChecklist: buildAccessibilityChecklist(),
     lectureUnits,
     labs,
     assessments,
@@ -693,11 +776,12 @@ function buildAnnualPlan(inputs) {
       "CA 筆試題目應使用教師自建、公開授權或 AI 生成後人工審核的原創題；避免使用未授權題庫。",
       "EA Skill Test 保持 no hint；所有 API / Service endpoint 必須 public，並在 rubric 中列明驗收方法。",
       "所有 AI 生成教材需保留教師審核紀錄與版本備份。",
+      "若使用者貼入現有每週清單，系統會保留週次脈絡，再補齊 lecture metadata、PPT slide spec、Lab/Assessment rubric 與 QA gate。",
     ],
   };
 }
 
-function buildLectureTopics(customTopics, count) {
+function buildLectureTopics(customTopics, count, weeklyLectures = []) {
   const defaults = [
     "進階 Linux 銜接：systemd、networking、package、logs",
     "Container runtime、OCI、image 與 registry 基礎",
@@ -713,14 +797,20 @@ function buildLectureTopics(customTopics, count) {
     "AWS Academy EKS：managed control plane、node group、IAM integration",
     "Isakei、Rancher 與期末 Skill Test briefing",
   ];
+  if (weeklyLectures.length) {
+    return Array.from({ length: count }, (_, index) => weeklyLectures[index]?.title || defaults[index % defaults.length]);
+  }
   const source = customTopics.length ? customTopics : defaults;
   return Array.from({ length: count }, (_, index) => source[index] || defaults[index % defaults.length]);
 }
 
-function buildLectureUnit(topic, index, count, hours, inputs) {
-  const week = Math.max(1, Math.round(((index + 1) / count) * inputs.weeks));
+function buildLectureUnit(topic, index, count, hours, inputs, weeklyItem = null) {
+  const week = weeklyItem?.week || Math.max(1, Math.round(((index + 1) / count) * inputs.weeks));
   const pptSlides = Math.max(10, Math.round(hours * inputs.slidesPerHour));
   const focus = inferLectureFocus(topic);
+  const templateId = inferLectureTemplateId(topic, pptSlides);
+  const resourceProfile = inferResourceProfile(topic, inputs.resourceConstraints);
+  const officialAlignment = inferOfficialAlignment(topic, inputs.officialRefs);
   return {
     id: `L${index + 1}`,
     number: index + 1,
@@ -729,8 +819,30 @@ function buildLectureUnit(topic, index, count, hours, inputs) {
     hours: roundOne(hours),
     videoMinutes: Math.round(hours * 60),
     pptSlides,
+    templateId,
     deckName: `Deck ${index + 1}: ${topic}`,
     focus,
+    metadata: {
+      course_id: slugifyFilename(inputs.moduleTitle || "course").replace(/\.pptx$/i, ""),
+      course_title: inputs.moduleTitle,
+      lecture_id: `L${index + 1}`,
+      module_id: inferModuleId(topic, index),
+      duration_minutes: Math.round(hours * 60),
+      slide_target: pptSlides,
+      template_id: templateId,
+      difficulty: inferDifficulty(topic),
+      prerequisites: index === 0 ? ["未指定"] : [`L${index}`],
+      resource_profile: resourceProfile,
+      official_alignment: officialAlignment,
+      locale: "zh-TW",
+      version: "0.1.0",
+      model_name: state.ai?.model || "local-rule",
+      prompt_hash: `local:${hashString(`${inputs.moduleTitle}|${topic}|${week}|${pptSlides}`)}`,
+      source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
+      review_status: "draft",
+    },
+    slideSpec: buildLectureSlideSpec(topic, pptSlides),
+    qaChecklist: buildLectureQaChecklist(),
     outcomes: [
       `學生能說明 ${focus.core} 的用途與限制。`,
       `學生能以 kubectl / YAML 完成一個可驗收的 ${focus.task} 任務。`,
@@ -744,7 +856,257 @@ function buildLectureUnit(topic, index, count, hours, inputs) {
     ],
     recordingCue: `${Math.round(hours * 60)} 分鐘影片，建議拆成 3 段：概念、demo、exam drill。`,
     duplicateCleanup: "若與前一 deck 重複，只保留 exam angle、demo 差異與 troubleshooting 變體。",
+    sourceWeeklyItem: weeklyItem?.raw || "",
   };
+}
+
+function parseWeeklyList(lines, inputs) {
+  return (lines || [])
+    .map((line, index) => parseWeeklyLine(line, index, inputs))
+    .filter(Boolean);
+}
+
+function parseWeeklyLine(line, index, inputs) {
+  const raw = clean(line);
+  if (!raw) return null;
+  const weekMatch =
+    raw.match(/(?:week|wk|w)\s*0?(\d{1,2})\b/i) ||
+    raw.match(/第\s*0?(\d{1,2})\s*[週周]/) ||
+    raw.match(/^0?(\d{1,2})[\s).、:：-]/);
+  const week = weekMatch ? clamp(Number(weekMatch[1]), 1, inputs.weeks || 52) : clamp(index + 1, 1, inputs.weeks || 52);
+  const title = raw
+    .replace(/^(?:week|wk|w)\s*0?\d{1,2}\s*[-:：).、]?\s*/i, "")
+    .replace(/^第\s*0?\d{1,2}\s*[週周]\s*[-:：).、]?\s*/, "")
+    .replace(/^0?\d{1,2}[\s).、:：-]+/, "")
+    .trim() || raw;
+  const hoursMatch = raw.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|小時)/i);
+  const hours = hoursMatch ? Number(hoursMatch[1]) : null;
+  const type = classifyWeeklyItem(title);
+  return {
+    raw,
+    week,
+    type,
+    title: stripWeeklyTypePrefix(title),
+    hours,
+  };
+}
+
+function stripWeeklyTypePrefix(title) {
+  return String(title || "")
+    .replace(/^(lecture|ppt|lab|ca lab|assessment|quiz|exam|test|project|buffer)\s*\d*\s*[-:：).、]?\s*/i, "")
+    .replace(/^(課堂|講課|實驗|評核|測驗|期末|專題|緩衝)\s*\d*\s*[-:：).、]?\s*/, "")
+    .trim();
+}
+
+function classifyWeeklyItem(title) {
+  const lower = String(title || "").toLowerCase();
+  const hasAssessmentCue = /assessment|quiz|exam|test|skill test|checkpoint|rubric|評核|考核|測驗|筆試|期末|口試|驗收|ea\b|ca\b/.test(lower);
+  const hasLabCue = /lab|實驗|hands-on|workshop/.test(lower);
+  const startsAsLab = /^(ca\s*)?lab\b|^實驗/.test(lower);
+  if (hasAssessmentCue && !startsAsLab) return "Assessment";
+  if (hasLabCue) return "CA Lab";
+  if (hasAssessmentCue) return "Assessment";
+  if (/project|capstone|buffer|catch-up|revision|緩衝|專題|複習週/.test(lower)) return "Project / Buffer";
+  return "Lecture/PPT";
+}
+
+function formatWeeklyItemAsSpec(item) {
+  return `${item.type} ${item.week}：${item.title}`;
+}
+
+function buildTimetableFromWeeklyItems({ weeklyItems, lectureUnits, labs, assessments, inputs }) {
+  const lectureQueue = [...lectureUnits];
+  const labQueue = [...labs];
+  const assessmentQueue = [...assessments];
+  const rows = weeklyItems.map((item) => {
+    if (item.type === "Lecture/PPT") {
+      const unit = lectureQueue.shift();
+      return {
+        week: item.week,
+        type: "Lecture/PPT",
+        id: unit?.id || `W${item.week}`,
+        title: unit?.title || item.title,
+        hours: unit?.hours || roundOne(inputs.lectureHours / Math.max(1, lectureUnits.length)),
+        output: unit ? `${unit.deckName} / ${unit.pptSlides} slides / ${unit.videoMinutes} min video` : "PPT slide spec + speaker notes",
+        owner: "Lecturer",
+        dependency: unit?.metadata?.prerequisites?.join("、") || "依週次清單排序",
+      };
+    }
+
+    if (item.type === "CA Lab") {
+      const lab = labQueue.shift();
+      return {
+        week: item.week,
+        type: "CA Lab",
+        id: lab?.id || `Lab W${item.week}`,
+        title: lab?.title || item.title,
+        hours: lab?.hours || roundOne(inputs.labHours / Math.max(1, labs.length)),
+        output: lab?.outcome || "steps、resources、deliverables、rubric、test cases",
+        owner: "Teacher / TA",
+        dependency: lab?.sourceWeeklyItem || "對齊前置 lecture 與 lab bridge",
+      };
+    }
+
+    if (item.type === "Assessment") {
+      const assessment = assessmentQueue.shift();
+      return {
+        week: item.week,
+        type: "Assessment",
+        id: assessment?.type || `A-W${item.week}`,
+        title: assessment?.title || item.title,
+        hours: assessment?.hours || roundOne(inputs.assessmentHours / Math.max(1, assessments.length)),
+        output: assessment?.deliverables?.join("、") || "goal、format、weight、rubric、evidence",
+        owner: assessment?.type === "EA" ? "#Cyrus / Lecturer" : "Lecturer / TA",
+        dependency: assessment?.sourceWeeklyItem || "QA gate 通過後發布",
+      };
+    }
+
+    return {
+      week: item.week,
+      type: item.type,
+      id: `W${item.week}`,
+      title: item.title,
+      hours: item.hours || 0,
+      output: "Buffer / repair pass / capstone integration",
+      owner: "Lecturer",
+      dependency: "用於補課、QA 修復或專題整合",
+    };
+  });
+
+  return rows.sort((a, b) => a.week - b.week || typeOrder(a.type) - typeOrder(b.type));
+}
+
+function buildProfessionalStandard(inputs, weeklyItems) {
+  const resourceConstraints = Array.isArray(inputs.resourceConstraints) ? inputs.resourceConstraints : [];
+  const officialRefs = Array.isArray(inputs.officialRefs) ? inputs.officialRefs : [];
+  return {
+    summary: weeklyItems.length
+      ? `已讀取 ${weeklyItems.length} 條每週清單，並重整為 Lecture/PPT、CA Lab、Assessment 與 QA gate。`
+      : "未提供每週清單；使用預設年度課程包骨架生成。",
+    flow: PROFESSIONAL_COURSE_STANDARD.flow,
+    slideTemplate: PROFESSIONAL_COURSE_STANDARD.slideSections,
+    weeklyBreakdown: {
+      lecture: weeklyItems.filter((item) => item.type === "Lecture/PPT").length,
+      lab: weeklyItems.filter((item) => item.type === "CA Lab").length,
+      assessment: weeklyItems.filter((item) => item.type === "Assessment").length,
+      buffer: weeklyItems.filter((item) => item.type === "Project / Buffer").length,
+    },
+    resourceProfile: resourceConstraints.length ? resourceConstraints : ["未指定"],
+    officialAlignment: officialRefs.length ? officialRefs : ["未指定"],
+  };
+}
+
+function buildMetadataContract(inputs) {
+  const officialRefs = Array.isArray(inputs.officialRefs) ? inputs.officialRefs : [];
+  return PROFESSIONAL_COURSE_STANDARD.metadataFields.map((field) => ({
+    field,
+    required: true,
+    source: field.includes("source") || field.includes("official") ? "官方來源 / snapshot" : "年度規劃生成器",
+    status: field === "official_alignment" && !officialRefs.length ? "needs_input" : "draft",
+  }));
+}
+
+function buildQaGates() {
+  return PROFESSIONAL_COURSE_STANDARD.qaGates.map((name, index) => ({
+    id: `QA-${String(index + 1).padStart(2, "0")}`,
+    name,
+    passRule: index < 2 ? "自動檢查" : "自動檢查 + 教師審核",
+    blocking: index !== 0 ? "publish" : "export",
+  }));
+}
+
+function buildAccessibilityChecklist() {
+  return [
+    "每張投影片必須有唯一標題",
+    "圖表、流程圖與截圖需要描述性 alt text",
+    "閱讀順序需與視覺順序一致",
+    "一般文字對比至少 4.5:1，大字至少 3:1",
+    "正文避免低於 18pt；每頁保留足夠留白",
+    "Lecture 結尾要有 Lab bridge 或 assessment handoff",
+  ];
+}
+
+function inferLectureTemplateId(topic, slides) {
+  const lower = String(topic || "").toLowerCase();
+  if (/eks|aws|cloud/.test(lower)) return `LT-CLOUD-${slides}`;
+  if (/troubleshoot|debug|故障|排錯/.test(lower)) return `LT-TROUBLE-${slides}`;
+  if (/review|skill|exam|cka|ckad|複習|衝刺/.test(lower)) return `LT-REVIEW-${slides}`;
+  if (/demo|yaml|kubectl|ansible|helm|kustomize/.test(lower)) return `LT-DEMO-${slides}`;
+  return `LT-CORE-${slides}`;
+}
+
+function inferModuleId(topic, index) {
+  const lower = String(topic || "").toLowerCase();
+  if (/linux|shell|systemd|bash/.test(lower)) return "M01-linux-foundation";
+  if (/ansible|automation|git/.test(lower)) return "M02-automation";
+  if (/container|oci|image|registry/.test(lower)) return "M03-container";
+  if (/kubernetes|kubectl|workload|service|ingress|storage|rbac|cka|ckad/.test(lower)) return "M04-kubernetes";
+  if (/eks|aws|rancher|isakei|cloud/.test(lower)) return "M05-cloud-capstone";
+  return `M${String(index + 1).padStart(2, "0")}-course-module`;
+}
+
+function inferDifficulty(topic) {
+  const lower = String(topic || "").toLowerCase();
+  if (/intro|導論|入門|foundation|基礎/.test(lower)) return "beginner";
+  if (/troubleshoot|security|rbac|eks|cka|ckad|skill/.test(lower)) return "advanced";
+  return "intermediate";
+}
+
+function inferResourceProfile(topic, resourceConstraints = []) {
+  const lower = String(topic || "").toLowerCase();
+  const resources = [];
+  if (/linux|shell|systemd|bash|vm/.test(lower)) resources.push("vm");
+  if (/ansible/.test(lower)) resources.push("ansible");
+  if (/kubernetes|kubectl|minikube|cka|ckad|workload|service|ingress|storage/.test(lower)) resources.push("minikube", "kubectl");
+  if (/eks|aws/.test(lower)) resources.push("aws-eks");
+  if (/rancher/.test(lower)) resources.push("rancher");
+  resourceConstraints.forEach((item) => {
+    const normalized = clean(item).toLowerCase();
+    if (normalized && !resources.includes(normalized)) resources.push(clean(item));
+  });
+  return resources.length ? resources : ["未指定"];
+}
+
+function inferOfficialAlignment(topic, officialRefs = []) {
+  const lower = String(topic || "").toLowerCase();
+  const refs = officialRefs.filter((ref) => {
+    const refLower = ref.toLowerCase();
+    if (/cka|cluster|troubleshoot|storage|network/.test(lower) && refLower.includes("cka")) return true;
+    if (/ckad|workload|deployment|job|probe|config/.test(lower) && refLower.includes("ckad")) return true;
+    if (/eks|aws/.test(lower) && refLower.includes("eks")) return true;
+    if (/ansible/.test(lower) && refLower.includes("ansible")) return true;
+    if (/minikube|kubectl|kubernetes/.test(lower) && refLower.includes("minikube")) return true;
+    return false;
+  });
+  return refs.length ? refs : officialRefs.length ? officialRefs.slice(0, 3) : ["未指定"];
+}
+
+function buildSourceSnapshotId(refs = []) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const signature = refs.length ? hashString(refs.join("|")) : "unspecified";
+  return `src-${stamp}-${signature}`;
+}
+
+function buildLectureSlideSpec(topic, slideTarget) {
+  const sections = PROFESSIONAL_COURSE_STANDARD.slideSections;
+  return sections.map((section, index) => ({
+    slide_no: index + 1,
+    section,
+    purpose: `${topic}：${section}`,
+    renderer_hint: index === 6 ? "demo command / YAML walkthrough" : index === 8 ? "misconception matrix" : "clear 16:9 teaching slide",
+    required_notes: index >= 6 ? "speaker notes must include answer key, checkpoint, and fallback" : "speaker notes must connect to learning objective",
+    repeatsEveryHour: slideTarget > sections.length,
+  }));
+}
+
+function buildLectureQaChecklist() {
+  return [
+    "slide_target 是否與 duration 對齊",
+    "每頁是否有唯一標題與 teaching purpose",
+    "Demo / checkpoint / lab bridge 是否齊全",
+    "metadata 是否含版本、來源快照與 review_status",
+    "speaker notes 是否包含答案鍵與 fallback",
+  ];
 }
 
 function buildAnnualTimetable({ lectureUnits, labs, assessments, inputs }) {
@@ -851,10 +1213,10 @@ function buildLabUnit(line, index, hours) {
   return lab;
 }
 
-function buildAssessmentPlan(inputs) {
+function buildAssessmentPlan(inputs, weeklyAssessments = []) {
   const caHours = roundOne(inputs.assessmentHours * 0.45);
   const eaHours = roundOne(inputs.assessmentHours * 0.55);
-  return [
+  const defaults = [
     {
       type: "CA",
       title: "Continuous Assessment：筆試 + Lab checkpoint",
@@ -880,6 +1242,26 @@ function buildAssessmentPlan(inputs) {
       rules: ["no hint", "endpoint must be public", "rubric 預先公開但測試題不提示"],
     },
   ];
+  weeklyAssessments.forEach((item, index) => {
+    if (defaults[index]) {
+      defaults[index].title = item.title;
+      defaults[index].week = item.week;
+      defaults[index].sourceWeeklyItem = item.raw;
+      if (item.hours) defaults[index].hours = item.hours;
+    } else {
+      defaults.push({
+        type: item.title.toLowerCase().includes("ea") || item.title.includes("期末") ? "EA" : "CA",
+        title: item.title,
+        week: item.week,
+        hours: item.hours || roundOne(inputs.assessmentHours / Math.max(1, weeklyAssessments.length)),
+        weight: "未指定",
+        deliverables: ["assessment brief", "evidence pack", "rubric", "teacher review record"],
+        rules: ["需定義 goal、format、weight_percent", "需通過 QA gate 才可發布", "需保存 source snapshot 與版本"],
+        sourceWeeklyItem: item.raw,
+      });
+    }
+  });
+  return defaults;
 }
 
 function defaultLabSpecs() {
@@ -1263,6 +1645,7 @@ function renderAnnualPlan() {
   if (!plan) {
     dom.annualMetrics.innerHTML = emptyText("按「生成全年規劃」建立 Lecture、Lab 與評核藍圖");
     dom.annualNote.textContent = "建議先確認 lecture 小時、Lab 小時與評核小時，再生成全年課程包。";
+    dom.annualProfessionalStandard.innerHTML = emptyText("貼入現有每週清單後，這裡會顯示專業結構、metadata contract 與 QA gate。");
     dom.annualLectureStatus.textContent = "尚未生成";
     dom.annualLecturePlan.innerHTML = emptyText("尚未生成 Lecture / PPT 清單");
     dom.annualTimetableStatus.textContent = "尚未生成";
@@ -1289,6 +1672,7 @@ function renderAnnualPlan() {
     <span>${escapeHtml(plan.inputs.context || "全年課程包已建立。")}</span>
     <small>${escapeHtml(plan.pptConsolidation.join(" "))}</small>
   `;
+  dom.annualProfessionalStandard.innerHTML = renderProfessionalStandard(plan);
   dom.annualLectureStatus.textContent = `${metrics.lectureUnits} decks / ${metrics.recordingHours}h video`;
   dom.annualTimetableStatus.textContent = `${plan.timetable?.length || 0} items across ${plan.inputs.weeks} weeks`;
   const canEditAnnual = ["teacher", "admin"].includes(state.role);
@@ -1303,7 +1687,15 @@ function renderAnnualPlan() {
         <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT 流程</button>
       </div>
       <p>${escapeHtml(unit.recordingCue)}</p>
+      <div class="spec-chip-row">
+        <span>${escapeHtml(unit.templateId || "LT-CORE")}</span>
+        <span>${escapeHtml(unit.metadata?.module_id || "module")}</span>
+        <span>${escapeHtml(unit.metadata?.difficulty || "intermediate")}</span>
+        <span>${escapeHtml((unit.metadata?.resource_profile || []).slice(0, 3).join(" / "))}</span>
+      </div>
       <ul>${unit.outcomes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      <small>PPT spec：${escapeHtml((unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → "))}${unit.slideSpec?.length > 4 ? "..." : ""}</small>
+      <small>QA：${escapeHtml((unit.qaChecklist || []).slice(0, 3).join("；"))}</small>
       <small>${escapeHtml(unit.duplicateCleanup)}</small>
     </article>
   `).join("");
@@ -1358,6 +1750,37 @@ function annualMetric(label, value, hint) {
   return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`;
 }
 
+function renderProfessionalStandard(plan) {
+  const standard = plan.professionalStandard || buildProfessionalStandard(plan.inputs || {}, plan.weeklyItems || []);
+  const weekly = standard.weeklyBreakdown || {};
+  const metadata = (plan.metadataContract || []).slice(0, 8);
+  const qaGates = plan.qaGates || [];
+  return `
+    <div class="professional-summary">
+      <strong>${escapeHtml(standard.summary)}</strong>
+      <span>Lecture ${weekly.lecture || 0} / Lab ${weekly.lab || 0} / Assessment ${weekly.assessment || 0} / Buffer ${weekly.buffer || 0}</span>
+    </div>
+    <div class="professional-grid">
+      <section>
+        <span>Pipeline</span>
+        <ul>${(standard.flow || []).slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </section>
+      <section>
+        <span>Metadata Contract</span>
+        <ul>${metadata.map((item) => `<li>${escapeHtml(item.field)}｜${escapeHtml(item.status)}</li>`).join("")}</ul>
+      </section>
+      <section>
+        <span>QA Gate</span>
+        <ul>${qaGates.slice(0, 6).map((item) => `<li>${escapeHtml(item.id)}｜${escapeHtml(item.name)}</li>`).join("")}</ul>
+      </section>
+      <section>
+        <span>Accessibility</span>
+        <ul>${(plan.accessibilityChecklist || []).slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </section>
+    </div>
+  `;
+}
+
 function renderAnnualTimetable(rows) {
   if (!rows.length) return emptyText("尚未生成 Timetable");
   return `
@@ -1393,6 +1816,7 @@ function renderAnnualTimetable(rows) {
 function typeChipClass(type) {
   if (type === "CA Lab") return "lab";
   if (type === "Assessment") return "assessment";
+  if (type === "Project / Buffer") return "buffer";
   return "lecture";
 }
 
@@ -1991,7 +2415,10 @@ async function sendAnnualLectureToBuilder(index) {
     context: [
       state.annualPlan.inputs.context,
       `PPT deck：${unit.deckName}`,
+      `Template：${unit.templateId || unit.metadata?.template_id || "LT-CORE"}`,
       `PPT focus：${unit.pptFocus.join("、")}`,
+      `Metadata：${JSON.stringify(unit.metadata || {}, null, 2)}`,
+      `QA checklist：${(unit.qaChecklist || []).join("；")}`,
       `Duplicate cleanup：${unit.duplicateCleanup}`,
     ].filter(Boolean).join("\n"),
     bloom: ["understand", "apply", "analyze", "evaluate"],
@@ -4895,10 +5322,16 @@ function buildAnnualMarkdown(plan) {
 - Week：${unit.week}
 - Lecture / video：${unit.hours} 小時（${unit.videoMinutes} 分鐘）
 - PPT：${unit.pptSlides} 頁，${unit.deckName}
+- Template：${unit.templateId || unit.metadata?.template_id || "LT-CORE"}
+- Metadata：${Object.entries(unit.metadata || {}).map(([key, value]) => `${key}=${Array.isArray(value) ? value.join("/") : value}`).join("；")}
 - Recording cue：${unit.recordingCue}
 - Learning outcomes：
 ${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
 - PPT focus：${unit.pptFocus.join("、")}
+- PPT slide spec：
+${(unit.slideSpec || []).map((item) => `  - S${item.slide_no} ${item.section}：${item.purpose}`).join("\n")}
+- QA checklist：
+${(unit.qaChecklist || []).map((item) => `  - ${item}`).join("\n")}
 - Dedup：${unit.duplicateCleanup}`).join("\n\n");
 
   const timetable = (plan.timetable || []).map((item) => `| W${item.week} | ${item.type} | ${item.id} | ${item.title} | ${item.hours}h | ${item.output} |`).join("\n");
@@ -4927,6 +5360,30 @@ ${item.generatedContent ? `\n#### 已生成 Assessment 內容\n\n${item.generate
 生成時間：${new Date(plan.generatedAt).toLocaleString("zh-Hant")}
 對象：${plan.inputs.audience}
 學年週數：${plan.inputs.weeks}
+
+## 專業與全面架構
+
+${plan.professionalStandard?.summary || "未提供每週清單；使用預設骨架。"}
+
+### 生成 Pipeline
+
+${(plan.professionalStandard?.flow || []).map((item) => `- ${item}`).join("\n")}
+
+### Metadata Contract
+
+| Field | Required | Source | Status |
+| --- | --- | --- | --- |
+${(plan.metadataContract || []).map((item) => `| ${item.field} | ${item.required ? "yes" : "no"} | ${item.source} | ${item.status} |`).join("\n")}
+
+### QA Gate
+
+| ID | Name | Pass Rule | Blocking |
+| --- | --- | --- | --- |
+${(plan.qaGates || []).map((item) => `| ${item.id} | ${item.name} | ${item.passRule} | ${item.blocking} |`).join("\n")}
+
+### Accessibility Checklist
+
+${(plan.accessibilityChecklist || []).map((item) => `- ${item}`).join("\n")}
 
 ## 小時與交付總覽
 
