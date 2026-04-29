@@ -1462,7 +1462,9 @@ function buildLecturePptxPrompt({ unit, inputs }) {
 3. pptxChecklist 必須逐頁包含 visible_text、visual_direction、speaker_notes、lab_bridge、qa_gate。
 4. 每頁 visible_text 不超過 4 個 bullets；speaker_notes 要有答案鍵、checkpoint 或 fallback。
 5. 加入 accessibility：唯一標題、alt text、reading order、contrast check。
-6. 使用繁體中文；技術命令、YAML、產品名可保留英文。
+6. outcomes、pptFocus、recordingCue 必須重新根據大題目、子題目、教學時間生成；如果現有資料與使用者輸入衝突，必須以使用者輸入為準。
+7. 不可沿用與新大題目無關的舊內容；例如題目是 Linux / System Admin 時，不可保留 Kubernetes / CKA / CKAD 內容，除非使用者輸入明確要求。
+8. 使用繁體中文；技術命令、YAML、產品名可保留英文。
 
 課程輸入：
 ${JSON.stringify(inputs || {}, null, 2)}

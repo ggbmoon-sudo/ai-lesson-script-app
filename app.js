@@ -868,7 +868,7 @@ function mergeLectureAiUnit(unit, aiUnit, inputs, index) {
     pptxChecklist: Array.isArray(aiUnit.pptxChecklist) && aiUnit.pptxChecklist.length ? aiUnit.pptxChecklist : unit.pptxChecklist,
     qaChecklist: Array.isArray(aiUnit.qaChecklist) && aiUnit.qaChecklist.length ? aiUnit.qaChecklist : unit.qaChecklist,
   };
-  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true });
+  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true, preserveAiContent: true });
   return merged;
 }
 
@@ -1086,25 +1086,36 @@ async function updateAnnualLectureFromCard(index) {
 }
 
 function updateLectureDerivedFields(unit, inputs, index, options = {}) {
-  const focus = inferLectureFocus(unit.title);
+  const focus = inferLectureFocus(`${unit.title} ${(unit.subtopics || []).join(" ")}`);
   const templateId = inferLectureTemplateId(unit.title, unit.pptSlides);
   const resourceProfile = inferResourceProfile(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.resourceConstraints);
   const officialAlignment = inferOfficialAlignment(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.officialRefs);
+  const firstSubtopic = unit.subtopics?.[0] || focus.task;
+  const secondSubtopic = unit.subtopics?.[1] || focus.practice || focus.task;
+  const localRecordingCue = `${unit.videoMinutes} 分鐘教學，建議拆成 ${Math.max(2, Math.ceil(unit.videoMinutes / 20))} 段：概念、demo、checkpoint、lab bridge。`;
+  const localOutcomes = [
+    `學生能說明 ${focus.core} 的用途、限制與適用情境。`,
+    `學生能完成與「${firstSubtopic}」相關的可驗收實作。`,
+    `學生能根據「${secondSubtopic}」的證據說明成功、失敗與修正方向。`,
+  ];
+  const localPptFocus = [
+    `${unit.title} 的概念框架與工作流程`,
+    `${firstSubtopic} 的逐步 demo / command walkthrough`,
+    `${secondSubtopic} 的 checkpoint、錯誤辨識與 troubleshooting`,
+    "Lab bridge、QA gate、accessibility 與版本 metadata",
+  ];
   unit.focus = focus;
   unit.templateId = templateId;
   unit.deckName = `Deck ${unit.number || index + 1}: ${unit.title}`;
-  unit.recordingCue = `${unit.videoMinutes} 分鐘教學，建議拆成 ${Math.max(2, Math.ceil(unit.videoMinutes / 20))} 段：概念、demo、checkpoint、lab bridge。`;
-  unit.outcomes = [
-    `學生能說明 ${focus.core} 的用途、限制與適用情境。`,
-    `學生能完成與「${unit.subtopics[0] || focus.task}」相關的可驗收實作。`,
-    "學生能用證據說明成功、失敗與修正方向。",
-  ];
-  unit.pptFocus = [
-    "大題目與子題目拆解",
-    "逐頁 slide purpose / visible text / speaker notes",
-    "Demo、checkpoint、Lab bridge 與 QA gate",
-    "Accessibility 與版本 metadata",
-  ];
+  if (!options.preserveAiContent || !unit.recordingCue) {
+    unit.recordingCue = localRecordingCue;
+  }
+  if (!options.preserveAiContent || !Array.isArray(unit.outcomes) || !unit.outcomes.length) {
+    unit.outcomes = localOutcomes;
+  }
+  if (!options.preserveAiContent || !Array.isArray(unit.pptFocus) || !unit.pptFocus.length) {
+    unit.pptFocus = localPptFocus;
+  }
   unit.metadata = {
     ...(unit.metadata || {}),
     course_id: slugifyFilename(inputs.moduleTitle || "course").replace(/\.pptx$/i, ""),
@@ -1120,8 +1131,8 @@ function updateLectureDerivedFields(unit, inputs, index, options = {}) {
     official_alignment: officialAlignment,
     locale: "zh-TW",
     version: unit.metadata?.version || "0.1.0",
-    model_name: state.ai?.model || "local-rule",
-    prompt_hash: `local:${hashString(`${inputs.moduleTitle}|${unit.title}|${unit.subtopics.join("|")}|${unit.videoMinutes}|${unit.pptSlides}`)}`,
+    model_name: state.ai?.model || "gemini-required",
+    prompt_hash: `gemini-seed:${hashString(`${inputs.moduleTitle}|${unit.title}|${unit.subtopics.join("|")}|${unit.videoMinutes}|${unit.pptSlides}`)}`,
     source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
     review_status: "draft",
   };
@@ -1466,15 +1477,28 @@ function typeOrder(type) {
 }
 
 function inferLectureFocus(topic) {
-  const lower = topic.toLowerCase();
-  if (lower.includes("ckad")) return { core: "CKAD application workload", task: "workload deployment" };
-  if (lower.includes("cka")) return { core: "CKA cluster administration", task: "cluster operation" };
-  if (lower.includes("eks") || lower.includes("aws")) return { core: "EKS managed Kubernetes", task: "cloud cluster" };
-  if (lower.includes("rancher")) return { core: "Rancher enterprise management", task: "multi-cluster operation" };
-  if (lower.includes("linux")) return { core: "advanced Linux operation", task: "server preparation" };
-  if (lower.includes("security") || lower.includes("rbac")) return { core: "Kubernetes security control", task: "RBAC policy" };
-  if (lower.includes("service") || lower.includes("ingress")) return { core: "Kubernetes networking", task: "public service exposure" };
-  return { core: "Kubernetes core concept", task: "hands-on Kubernetes" };
+  const lower = String(topic || "").toLowerCase();
+  const hasKubernetes = /kubernetes|kubectl|minikube|cka|ckad|eks|rancher|pod|deployment|ingress|cluster|namespace|workload/.test(lower);
+  if (/ckad/.test(lower)) return { core: "CKAD application workload", task: "workload deployment", practice: "YAML 與 workload 驗收" };
+  if (/cka/.test(lower)) return { core: "CKA cluster administration", task: "cluster operation", practice: "cluster 故障排查" };
+  if (/eks|aws/.test(lower)) return { core: "EKS managed Kubernetes", task: "cloud cluster", practice: "managed node / endpoint 驗收" };
+  if (/rancher/.test(lower)) return { core: "Rancher enterprise management", task: "multi-cluster operation", practice: "cluster policy 與存取控制" };
+  if (hasKubernetes && /security|rbac/.test(lower)) return { core: "Kubernetes security control", task: "RBAC policy", practice: "least privilege 驗證" };
+  if (hasKubernetes && /service|ingress|network/.test(lower)) return { core: "Kubernetes networking", task: "public service exposure", practice: "Service / Ingress 驗收" };
+  if (/system admin|sysadmin|system administration|systemd|daemon|service|process|journalctl|monitor|linux|shell|bash|package|logs/.test(lower)) {
+    if (/process|monitor|top|ps|kill|signal/.test(lower) && /systemd|daemon|service/.test(lower)) {
+      return { core: "Linux process and service administration", task: "process monitoring plus service lifecycle control", practice: "ps/top/systemctl/journalctl 證據鏈" };
+    }
+    if (/process|monitor|top|ps|kill|signal/.test(lower)) {
+      return { core: "Linux process monitoring and control", task: "process inspection and signal handling", practice: "process 狀態、PID、signal 與資源使用證據" };
+    }
+    if (/systemd|daemon|service/.test(lower)) {
+      return { core: "Linux service and daemon management", task: "service lifecycle control", practice: "systemctl / journalctl 驗收" };
+    }
+    return { core: "advanced Linux system administration", task: "server operation workflow", practice: "logs、services、packages 與網絡檢查" };
+  }
+  if (/security|rbac/.test(lower)) return { core: "security and access control", task: "policy design", practice: "權限與審核證據" };
+  return { core: "course module concept", task: "hands-on task", practice: "可驗收成果與反思" };
 }
 
 function buildLabUnit(line, index, hours) {
