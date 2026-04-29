@@ -201,6 +201,7 @@ const state = {
   questions: [],
   materialPages: [],
   materialMeta: null,
+  slideJson: [],
   versions: [],
   messages: [],
   auditLog: [],
@@ -515,6 +516,8 @@ async function checkAiHealth() {
       enabled: Boolean(data.aiEnabled),
       provider: data.provider || "local",
       model: data.model || "",
+      geminiModelTier: data.geminiModelTier || null,
+      geminiGeneration: data.geminiGeneration || null,
       message: data.aiEnabled ? `${formatAiProviderName(data.provider)} 已連線` : "本機規則",
       busy: false,
       lastCheckedAt: new Date().toISOString(),
@@ -2108,15 +2111,17 @@ async function handleMaterialUpload(event) {
     const parsed = await parseMaterialFile(file);
     if (parsed?.text) {
       state.materialPages = parsed.pages || [];
+      state.slideJson = Array.isArray(parsed.slideJson) ? parsed.slideJson : [];
       state.materialMeta = {
         filename: parsed.filename || file.name,
         type: parsed.type || file.name.split(".").pop(),
         warning: parsed.warning || "",
+        slideJsonCount: state.slideJson.length,
       };
       dom.materialText.value = parsed.text;
-      logAudit("教材解析", `${state.materialMeta.filename} 解析為 ${state.materialPages.length || 1} 個片段`);
+      logAudit("教材解析", `${state.materialMeta.filename} 解析為 ${state.materialPages.length || 1} 個片段${state.slideJson.length ? `，並建立 ${state.slideJson.length} 頁 slide_json` : ""}`);
       setMaterialStatus(
-        `已解析 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段${state.materialMeta.warning ? `。${state.materialMeta.warning}` : ""}`,
+        `已解析 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段${state.slideJson.length ? `，${state.slideJson.length} 頁 clean slide_json` : ""}${state.materialMeta.warning ? `。${state.materialMeta.warning}` : ""}`,
         true,
       );
       markDriveBackupNeeded("教材解析");
@@ -2130,6 +2135,7 @@ async function handleMaterialUpload(event) {
   if (isPlainTextFile(file)) {
     const text = await readFileAsText(file);
     state.materialPages = textToPages(text);
+    state.slideJson = [];
     state.materialMeta = { filename: file.name, type: "text", warning: "" };
     dom.materialText.value = text;
     logAudit("教材解析", `${file.name} 讀入為 ${state.materialPages.length || 1} 個文字片段`);
@@ -2150,8 +2156,11 @@ async function generateScript() {
   const budget = calculateBudget(minutes);
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
-  const scriptPages = getScriptPagesForLecture(material, startPage, inputs);
-  const focusedMaterial = pagesToScriptSource(scriptPages);
+  const slideJson = getCleanSlideJsonForLecture(material, startPage, inputs);
+  const scriptPages = slideJsonToScriptPages(slideJson, inputs);
+  const focusedMaterial = JSON.stringify(slideJson, null, 2);
+  const courseJson = buildCourseJsonForScript(inputs, { minutes, budget, wpm, targetWords });
+  const teacherInterview = buildTeacherInterviewForScript(inputs);
 
   state.budget = { ...budget, wpm, targetWords };
   setAiBusy(true, "生成講稿中");
@@ -2160,6 +2169,9 @@ async function generateScript() {
     const aiScript = await requestAi("script", {
       inputs,
       material: focusedMaterial,
+      slideJson,
+      courseJson,
+      teacherInterview,
       scriptPages,
       startPage,
       minutes,
@@ -2229,35 +2241,111 @@ function reviseScript(mode) {
 }
 
 function getScriptPagesForLecture(material, startPage, inputs) {
-  const sourcePages = state.materialPages.length
-    ? state.materialPages
-    : clean(material)
-      ? textToPages(material)
-      : state.slides.map((slide) => slideToScriptPage(slide));
-  const cleanedPages = sourcePages
-    .map((page, index) => sanitizeScriptPage(page, index, inputs))
-    .filter((page) => page.text || page.title);
-  if (!cleanedPages.length && state.slides.length) {
-    return state.slides.map((slide, index) => sanitizeScriptPage(slideToScriptPage(slide), index, inputs));
-  }
+  return slideJsonToScriptPages(getCleanSlideJsonForLecture(material, startPage, inputs), inputs);
+}
+
+function getCleanSlideJsonForLecture(material, startPage, inputs) {
+  const source = state.slideJson.length
+    ? state.slideJson.map(normalizeSlideJsonFromParsedPpt)
+    : state.materialPages.length
+      ? state.materialPages.map((page, index) => pageToSlideJson(page, index, "ppt"))
+      : state.slides.length
+        ? state.slides.map((slide, index) => appSlideToCleanSlideJson(slide, index))
+        : textToPages(material).map((page, index) => pageToSlideJson(page, index, "text"));
+  const cleanedPages = source
+    .map((slide, index) => normalizeCleanSlideJson(slide, index, inputs))
+    .filter((slide) => slide.slide_title || slide.slide_body || slide.speaker_notes);
   const startIndex = clamp(startPage - 1, 0, Math.max(0, cleanedPages.length - 1));
   return cleanedPages.slice(startIndex);
 }
 
-function slideToScriptPage(slide) {
-  const parts = [
-    slide.title,
-    slide.activity,
-    slide.speakerNotes,
-    slide.notes,
-    slide.suggestedVisual && `視覺提示：${slide.suggestedVisual}`,
-    slide.factCheckPoints?.length ? `需查核：${slide.factCheckPoints.join("；")}` : "",
-  ].filter(Boolean);
+function normalizeSlideJsonFromParsedPpt(slide) {
   return {
-    number: slide.number,
-    title: slide.title,
-    text: parts.join("\n"),
+    slide_no: slide.slide_no,
+    slide_title: slide.slide_title,
+    slide_subtitle: slide.slide_subtitle,
+    slide_body: slide.slide_body,
+    visual_description: slide.visual_description,
+    speaker_notes: slide.speaker_notes,
+    source_type: slide.source_type || "原教材內容",
+    extracted_from: slide.extracted_from || "ppt",
   };
+}
+
+function pageToSlideJson(page, index, extractedFrom = "ppt") {
+  const rawText = sanitizeLectureSourceText(page.text || "");
+  const speakerNotes = extractSpeakerNotesFromCleanText(rawText);
+  const bodyWithoutNotes = removeSpeakerNotesFromText(rawText);
+  const lines = bodyWithoutNotes.split(/\n+/).map(clean).filter(Boolean);
+  const title = sanitizeLectureTitle(page.title || lines[0], index);
+  const subtitle = lines[1] && lines[1].length <= 120 && lines[1] !== title ? lines[1] : "";
+  const bodyStart = subtitle ? 2 : 1;
+  return {
+    slide_no: Number(page.number) || index + 1,
+    slide_title: title,
+    slide_subtitle: subtitle,
+    slide_body: lines.slice(bodyStart).join("\n"),
+    visual_description: "",
+    speaker_notes: speakerNotes,
+    source_type: "原教材內容",
+    extracted_from: extractedFrom,
+  };
+}
+
+function appSlideToCleanSlideJson(slide, index) {
+  return {
+    slide_no: slide.number || index + 1,
+    slide_title: slide.title || `投影片 ${index + 1}`,
+    slide_subtitle: slide.event || "",
+    slide_body: extractVisibleSlideBodyFromAppSlide(slide),
+    visual_description: slide.suggestedVisual || firstPromptField(slide.notes, "suggested_visual") || "",
+    speaker_notes: slide.speakerNotes || firstPromptField(slide.notes, "speaker_notes") || "",
+    source_type: "原教材內容",
+    extracted_from: "app_clean_slide",
+  };
+}
+
+function normalizeCleanSlideJson(slide, index, inputs) {
+  const title = sanitizeLectureTitle(slide.slide_title || `投影片 ${index + 1}`, index);
+  const subtitle = sanitizeLectureSourceText(slide.slide_subtitle || "");
+  const body = sanitizeLectureSourceText(slide.slide_body || "");
+  const speakerNotes = sanitizeLectureSourceText(slide.speaker_notes || "");
+  const visualDescription = sanitizeLectureSourceText(slide.visual_description || "");
+  return {
+    slide_no: Number(slide.slide_no) || index + 1,
+    slide_title: title,
+    slide_subtitle: subtitle,
+    slide_body: body,
+    visual_description: visualDescription,
+    speaker_notes: speakerNotes,
+    source_type: "原教材內容",
+    extracted_from: slide.extracted_from || "ppt",
+    pageType: inferLecturePageType(`${title}\n${subtitle}\n${body}\n${speakerNotes}\n${visualDescription}\n${inputs.topic}`),
+    keyPoints: extractScriptKeyPoints([subtitle, body, speakerNotes].filter(Boolean).join("\n"), title),
+    sourceQuality: inferSourceQuality(`${body}\n${speakerNotes}`),
+  };
+}
+
+function slideJsonToScriptPages(slideJson, inputs) {
+  return slideJson.map((slide, index) => {
+    const text = [
+      slide.slide_subtitle,
+      slide.slide_body,
+      slide.visual_description && `視覺描述：${slide.visual_description}`,
+      slide.speaker_notes && `speaker_notes：${slide.speaker_notes}`,
+    ].filter(Boolean).join("\n");
+    const page = {
+      number: slide.slide_no || index + 1,
+      title: slide.slide_title || `投影片 ${index + 1}`,
+      text,
+    };
+    const normalized = sanitizeScriptPage(page, index, inputs);
+    normalized.pageType = slide.pageType || normalized.pageType;
+    normalized.keyPoints = slide.keyPoints?.length ? slide.keyPoints : normalized.keyPoints;
+    normalized.sourceQuality = slide.sourceQuality || normalized.sourceQuality;
+    normalized.slideJson = slide;
+    return normalized;
+  });
 }
 
 function sanitizeScriptPage(page, index, inputs) {
@@ -2272,6 +2360,78 @@ function sanitizeScriptPage(page, index, inputs) {
     keyPoints: extractScriptKeyPoints(rawText, title),
     sourceQuality: inferSourceQuality(rawText),
   };
+}
+
+function extractVisibleSlideBodyFromAppSlide(slide) {
+  const promptBody = extractPromptFieldLinesClient(slide.notes, "slide_body");
+  const candidates = [
+    ...promptBody,
+    slide.activity,
+  ].filter(Boolean);
+  if (candidates.length) return candidates.join("\n");
+  return sanitizeLectureSourceText(slide.notes || "")
+    .split(/\n+/)
+    .filter((line) => !/prompt|compiler|layout|visual|course_json|hard|輸出格式|硬性限制/i.test(line))
+    .slice(0, 5)
+    .join("\n");
+}
+
+function extractPromptFieldLinesClient(text, field) {
+  const lines = String(text || "").split(/\r?\n/);
+  const normalizedField = field.toLowerCase();
+  const normalizeKey = (line) => line.trim().toLowerCase().replace(/^\d+\.\s*/, "");
+  const start = lines.findIndex((line) => normalizeKey(line).startsWith(`${normalizedField}:`));
+  if (start === -1) return [];
+  const first = lines[start].trim().replace(/^\d+\.\s*/, "").split(":").slice(1).join(":").trim();
+  const output = first ? [first] : [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (/^\d+\.\s*[a-z_ ]+:/i.test(line) || /^[a-z_ ]+:/i.test(line) || /^【/.test(line)) break;
+    output.push(line.replace(/^[-*]\s*/, ""));
+    if (output.length >= 5) break;
+  }
+  return output;
+}
+
+function firstPromptField(text, field) {
+  return extractPromptFieldLinesClient(text, field)[0] || "";
+}
+
+function extractSpeakerNotesFromCleanText(text) {
+  const match = String(text || "").match(/(?:講者備註|speaker_notes|speaker notes|notes)[:：]\s*([\s\S]*)/i);
+  return match ? sanitizeLectureSourceText(match[1]) : "";
+}
+
+function removeSpeakerNotesFromText(text) {
+  return String(text || "").replace(/(?:講者備註|speaker_notes|speaker notes|notes)[:：]\s*[\s\S]*$/i, "").trim();
+}
+
+function buildCourseJsonForScript(inputs, meta = {}) {
+  return {
+    title: inputs.topic,
+    subject_domain: inputs.subject,
+    audience_profile: inputs.audience,
+    duration_min: meta.minutes || inputs.duration,
+    core_teaching_min: meta.budget?.core || "",
+    style: inputs.style,
+    objectives: splitPlanItems(inputs.objective),
+    prerequisites: splitPlanItems(inputs.context),
+    teacher_interview_answers: inputs.interviewAnswers || "",
+    suggested_wpm: meta.wpm || "",
+    target_words_reference: meta.targetWords || "",
+  };
+}
+
+function buildTeacherInterviewForScript(inputs) {
+  return [
+    `課題：${inputs.topic}`,
+    `科目：${inputs.subject}`,
+    `對象：${inputs.audience}`,
+    `學習目標：${inputs.objective || "未提供"}`,
+    `先備知識與班情：${inputs.context || "未提供"}`,
+    `教師追問回答：${inputs.interviewAnswers || "尚未提供"}`,
+  ].join("\n");
 }
 
 function sanitizeLectureSourceText(text) {
@@ -3092,6 +3252,7 @@ function saveVersion() {
     script: state.script,
     assessmentBank: structuredCloneSafe(state.assessmentBank),
     materialPages: structuredCloneSafe(state.materialPages),
+    slideJson: structuredCloneSafe(state.slideJson),
     auditLog: structuredCloneSafe(state.auditLog),
   };
   state.versions.unshift(version);
@@ -3226,6 +3387,7 @@ function restoreVersion(index) {
   state.script = version.script;
   state.assessmentBank = version.assessmentBank ? structuredCloneSafe(version.assessmentBank) : null;
   state.materialPages = structuredCloneSafe(version.materialPages || state.materialPages || []);
+  state.slideJson = structuredCloneSafe(version.slideJson || state.slideJson || []);
   setFormInputs(version.inputs);
   dom.assistantContext.value = buildAssistantContext();
   renderAll();
@@ -3690,7 +3852,7 @@ function buildProjectPayload(source = "manual") {
   const inputs = state.lastLessonInputs || getLessonInputs();
   return {
     schema: "eduscript-ai-project",
-    schemaVersion: 4,
+    schemaVersion: 5,
     app: "EduScript AI Studio",
     source,
     exportedAt: new Date().toISOString(),
@@ -3701,6 +3863,7 @@ function buildProjectPayload(source = "manual") {
     questions: state.questions,
     materialMeta: state.materialMeta,
     materialPages: state.materialPages,
+    slideJson: state.slideJson,
     materialText: dom.materialText.value,
     assistantContext: dom.assistantContext.value,
     script: state.script,
@@ -3731,6 +3894,7 @@ function applyProjectPayload(payload, sourceLabel = "備份") {
   state.questions = payload.questions || [];
   state.materialPages = payload.materialPages || [];
   state.materialMeta = payload.materialMeta || null;
+  state.slideJson = payload.slideJson || payload.materialMeta?.slideJson || [];
   state.versions = payload.versions || [];
   state.messages = payload.messages || state.messages || [];
   state.auditLog = payload.auditLog || [];
@@ -4107,6 +4271,7 @@ function clearProject() {
   state.questions = [];
   state.materialPages = [];
   state.materialMeta = null;
+  state.slideJson = [];
   state.versions = [];
   state.messages = [];
   state.auditLog = [];
@@ -4166,7 +4331,7 @@ function renderAiStatus() {
   const providerName = formatAiProviderName(state.ai.provider);
   const label = state.ai.busy ? state.ai.message : state.ai.enabled ? providerName : state.ai.message || "本機規則";
   const detail = state.ai.enabled
-    ? state.ai.model || "server model"
+    ? buildAiStatusDetail()
     : state.ai.checked
       ? "未使用雲端 AI"
       : "檢查中";
@@ -4198,6 +4363,18 @@ function setAiBusy(busy, message = "") {
     state.ai.message = "本機規則";
   }
   renderAiStatus();
+}
+
+function buildAiStatusDetail() {
+  const parts = [state.ai.model || "server model"];
+  if (state.ai.provider === "gemini" && state.ai.geminiModelTier) {
+    parts.push(state.ai.geminiModelTier.tier === "high" ? "高階模型" : state.ai.geminiModelTier.tier === "fast" ? "快速模型" : "模型等級待確認");
+  }
+  if (state.ai.provider === "gemini" && state.ai.geminiGeneration) {
+    parts.push(`temp ${state.ai.geminiGeneration.temperature}`);
+    parts.push(`script max ${state.ai.geminiGeneration.scriptMaxOutputTokens}`);
+  }
+  return parts.join(" · ");
 }
 
 function formatAiProviderName(provider) {
@@ -4740,6 +4917,7 @@ function persistState() {
     script: state.script,
     questions: state.questions,
     materialPages: state.materialPages,
+    slideJson: state.slideJson,
     materialMeta: state.materialMeta,
     versions: state.versions,
     messages: state.messages,
@@ -4769,6 +4947,7 @@ function restoreState() {
     state.questions = payload.questions || [];
     state.materialPages = payload.materialPages || [];
     state.materialMeta = payload.materialMeta || null;
+    state.slideJson = payload.slideJson || [];
     state.versions = payload.versions || [];
     state.messages = payload.messages || [];
     state.auditLog = payload.auditLog || [];

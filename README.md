@@ -74,9 +74,15 @@ AI_PROVIDER=gemini
 GEMINI_API_KEY=你的 Gemini API key
 GEMINI_MODEL=gemini-3-pro-preview
 GEMINI_THINKING_LEVEL=high
+GEMINI_TEMPERATURE=0.25
+GEMINI_SCRIPT_MAX_OUTPUT_TOKENS=32768
 ```
 
 `AI_PROVIDER=auto` 會先用 OpenAI key；沒有 OpenAI key 時會改用 Gemini key。兩者都沒有時，APP 仍會使用本機規則生成。高品質完整講稿建議使用 `gemini-3-pro-preview` + `GEMINI_THINKING_LEVEL=high`；如果想節省延遲或成本，可改為 `gemini-3-flash-preview`。Gemini 2.5 系列可用 `GEMINI_THINKING_BUDGET=-1` 啟用 dynamic thinking。
+
+講稿生成流程已改為兩階段：先把 PPTX 解析成乾淨的 `slide_json`，每頁保留 `slide_no`、`slide_title`、`slide_subtitle`、`slide_body`、`visual_description`、`speaker_notes`、`source_type` 與 `extracted_from`；再把完整 `slide_json`、課程資訊、訪談資料、學習目標、對象、時長與風格交給 Gemini 生成逐頁教師口語講稿。APP 會避免把 PPT Prompt、compiler prompt、debug log 或版本紀錄混入正式講稿。
+
+AI 狀態燈會顯示 Gemini 是否屬於高階模型、目前 temperature，以及講稿專用 max output tokens。若使用 Flash / Lite 類模型，APP 會提示完整技術講稿較建議改用 Pro / Thinking 類模型。
 
 ### 部署版
 

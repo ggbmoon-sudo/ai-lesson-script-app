@@ -15,6 +15,9 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL || "high");
 const GEMINI_THINKING_BUDGET = parseThinkingBudget(process.env.GEMINI_THINKING_BUDGET);
+const GEMINI_TEMPERATURE = parseBoundedNumber(process.env.GEMINI_TEMPERATURE, 0.25, 0, 1);
+const GEMINI_MAX_OUTPUT_TOKENS = parsePositiveInteger(process.env.GEMINI_MAX_OUTPUT_TOKENS, 32768);
+const GEMINI_SCRIPT_MAX_OUTPUT_TOKENS = parsePositiveInteger(process.env.GEMINI_SCRIPT_MAX_OUTPUT_TOKENS, GEMINI_MAX_OUTPUT_TOKENS);
 const GOOGLE_DRIVE_CLIENT_ID = process.env.GOOGLE_DRIVE_CLIENT_ID || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || "";
 const GAMMA_API_KEY = process.env.GAMMA_API_KEY || "";
@@ -87,7 +90,7 @@ const scriptSchema = {
     teacherScriptPages: {
       type: "array",
       minItems: 1,
-      maxItems: 80,
+      maxItems: 160,
       items: {
         type: "object",
         additionalProperties: false,
@@ -99,7 +102,7 @@ const scriptSchema = {
             type: "array",
             minItems: 1,
             maxItems: 3,
-            items: { type: "string" },
+            items: { type: "string", enum: ["原教材內容", "推定補充", "需教師確認"] },
           },
           teachingPurpose: { type: "string" },
           spokenScript: { type: "string" },
@@ -149,6 +152,14 @@ const server = http.createServer(async (req, res) => {
         provider: provider?.name || "local",
         model: provider?.model || "",
         thinking: provider?.name === "gemini" ? getGeminiThinkingStatus() : null,
+        geminiModelTier: provider?.name === "gemini" ? classifyGeminiModel(GEMINI_MODEL) : null,
+        geminiGeneration: provider?.name === "gemini"
+          ? {
+              temperature: GEMINI_TEMPERATURE,
+              maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+              scriptMaxOutputTokens: GEMINI_SCRIPT_MAX_OUTPUT_TOKENS,
+            }
+          : null,
         availableProviders: {
           openai: Boolean(OPENAI_API_KEY),
           gemini: Boolean(GEMINI_API_KEY),
@@ -559,18 +570,27 @@ function parseOpenXmlMaterial(buffer, filename, extension) {
       const notesText = entries.has(notesName)
         ? sanitizeParsedNotes(extractXmlText(entries.get(notesName).toString("utf8")))
         : "";
-      const text = [slideText, notesText && `講者備註：${notesText}`].filter(Boolean).join("\n");
+      const slideJson = buildCleanSlideJsonFromPpt({ slideText, notesText, index });
+      const text = [
+        slideJson.slide_title,
+        slideJson.slide_subtitle,
+        slideJson.slide_body,
+        slideJson.speaker_notes && `講者備註：${slideJson.speaker_notes}`,
+      ].filter(Boolean).join("\n");
       return {
         number: index + 1,
-        title: firstLine(text) || `投影片 ${index + 1}`,
+        title: slideJson.slide_title || `投影片 ${index + 1}`,
         text,
+        slideJson,
       };
     });
+    const slideJson = pages.map((page) => page.slideJson);
 
     return {
       filename,
       type: "pptx",
       pages,
+      slideJson,
       text: pagesToText(pages),
       warning: pages.length ? "" : "未能在 PPTX 找到投影片文字。",
     };
@@ -618,6 +638,36 @@ function sanitizeParsedNotes(text) {
   const cleaned = lines.join("\n").replace(/\s{2,}/g, " ").trim();
   if (cleaned.length < 8) return "";
   return cleaned;
+}
+
+function buildCleanSlideJsonFromPpt({ slideText, notesText, index }) {
+  const lines = String(slideText || "")
+    .split(/\r?\n+/)
+    .map((line) => sanitizeParsedSlideLine(line))
+    .filter(Boolean);
+  const title = sanitizeParsedSlideLine(lines[0]) || `投影片 ${index + 1}`;
+  const subtitleCandidate = lines[1] && lines[1].length <= 120 && !/^[-*•]/.test(lines[1])
+    ? lines[1]
+    : "";
+  const bodyStart = subtitleCandidate ? 2 : 1;
+  const body = lines.slice(bodyStart).join("\n").trim();
+  return {
+    slide_no: index + 1,
+    slide_title: title,
+    slide_subtitle: subtitleCandidate,
+    slide_body: body,
+    visual_description: "",
+    speaker_notes: sanitizeParsedNotes(notesText),
+    source_type: "原教材內容",
+    extracted_from: "ppt",
+  };
+}
+
+function sanitizeParsedSlideLine(line) {
+  return String(line || "")
+    .replace(/\s+/g, " ")
+    .replace(/^講者備註[:：]?\s*/u, "")
+    .trim();
 }
 
 function parsePdfMaterial(buffer, filename) {
@@ -1071,7 +1121,7 @@ function themeXml() {
 
 async function createStructuredResponse({ provider, schemaName, schema, input }) {
   if (provider.name === "gemini") {
-    return createGeminiStructuredResponse({ schema, input });
+    return createGeminiStructuredResponse({ schemaName, schema, input });
   }
 
   return createOpenAiStructuredResponse({ schemaName, schema, input });
@@ -1114,7 +1164,7 @@ async function createOpenAiStructuredResponse({ schemaName, schema, input }) {
   return parseStructuredJson(text, "OpenAI");
 }
 
-async function createGeminiStructuredResponse({ schema, input }) {
+async function createGeminiStructuredResponse({ schemaName, schema, input }) {
   const modelPath = GEMINI_MODEL.startsWith("models/") ? GEMINI_MODEL.slice("models/".length) : GEMINI_MODEL;
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelPath)}:generateContent`;
   const response = await fetch(endpoint, {
@@ -1133,7 +1183,7 @@ async function createGeminiStructuredResponse({ schema, input }) {
           parts: [{ text: input }],
         },
       ],
-      generationConfig: buildGeminiGenerationConfig(schema),
+      generationConfig: buildGeminiGenerationConfig(schema, schemaName),
     }),
   });
 
@@ -1186,48 +1236,86 @@ Bloom 層次：${(inputs.bloom || []).join(", ")}
 4. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
 }
 
-function buildScriptPrompt({ inputs, material, scriptPages = [], startPage, minutes, budget, wpm }) {
-  const pages = Array.isArray(scriptPages) && scriptPages.length
-    ? scriptPages
-    : [{ number: startPage || 1, title: "教材頁面", text: String(material || "").slice(0, 1800) }];
-  const pageBrief = pages.map((page) => ({
-    number: page.number,
-    title: page.title,
-    pageType: page.pageType || "content",
-    text: String(page.text || "").slice(0, 1400),
-  }));
-  return `請根據已解析的 PPT 頁面生成「逐頁教師授課稿」。正式講稿不能把 PPT Prompt、教材大綱、教師講稿、學生自學講義混在一起。
+function buildScriptPrompt({ inputs, material, slideJson = [], courseJson = null, teacherInterview = "", scriptPages = [], startPage, minutes, budget, wpm }) {
+  const cleanSlideJson = Array.isArray(slideJson) && slideJson.length
+    ? slideJson
+    : buildFallbackSlideJsonFromScriptPages(scriptPages, material, startPage);
+  const course = courseJson || buildCourseJsonForScriptPrompt({ inputs, minutes, budget, wpm });
+  return `你是一位資深技術講師與教學設計師。請根據「完整 PPT slide_json」與「課程訪談資料」生成一份正式教師口語講稿。這份講稿要給老師直接上課使用，不是 prompt 匯出紀錄，也不是學生補充講義。
 
-課題：${inputs.topic}
-科目：${inputs.subject}
-對象：${inputs.audience}
-起始頁：${startPage}
-目標分鐘：${minutes}
-核心講授分鐘：${budget.core}
-建議 WPM：${wpm}
-風格：${inputs.style}
-教師追問回答：${inputs.interviewAnswers || "尚未提供"}
-PPT 實際頁數：${pages.length}
+輸入資料：
+【課程資訊】
+${JSON.stringify(course, null, 2)}
 
-已解析 PPT 頁面 JSON：
-${JSON.stringify(pageBrief, null, 2).slice(0, 28000)}
+【完整 PPT 解析 slide_json】
+${JSON.stringify(cleanSlideJson, null, 2)}
+
+【課程訪談資料】
+${teacherInterview || inputs.interviewAnswers || "尚未提供"}
 
 硬性要求：
-1. teacherScriptPages 必須覆蓋上面 JSON 內每一頁，不可只挑重點頁。
-2. 每頁固定輸出四項：teachingPurpose、spokenScript、checkpoint、transition。
-3. spokenScript 要像老師真的在課堂會講的話，不要複製投影片文字，不要套同一段模板。每頁建議 120-180 個中文字；重點是可直接照講，不是追求總字數。
-4. sourceTags 必須使用以下三種文字：原教材內容、推定補充、需教師確認。直接來自 PPT 的內容標示原教材內容；AI 推論標示推定補充；缺少資料或需校本確認標示需教師確認。
-5. 移除疑似解析錯誤，例如「講者備註：1、2、3」、單純頁碼、片段編號、PPT prompt 的版面指令。
-6. 若頁面屬 demo：spokenScript 要包含講解流程、預期輸出、失敗時 fallback。
-7. 若頁面屬 troubleshooting：把錯誤現象對應到第一個要查的 command 或 evidence。
-8. 若頁面屬 assessment / acceptance：驗收條件必須可觀察、可重做、可截圖或可用 command 證明。
-9. selfStudyHandout 是第二區塊，供學生自學補充，不要放在正式逐頁講稿前。
-10. generationLog 是第三區塊，供後台或除錯，不要把 Prompt 放在正式講稿前。
+1. 每一頁 PPT 都必須生成講稿，不可只挑部分頁面；teacherScriptPages 長度必須等於 slide_json 長度。
+2. 完全對齊 PPT 頁序與頁數，不要新增不存在的投影片，不要省略任何一頁。
+3. 每頁固定輸出：teachingPurpose、spokenScript、checkpoint、transition。
+4. spokenScript 要像老師真的會講的話，不要只是複製投影片文字。每頁約 120-180 字，Demo / Troubleshooting 頁可較長。
+5. sourceTags 只能使用「原教材內容」「推定補充」「需教師確認」三種文字；來自 PPT 用「原教材內容」；AI 合理延伸用「推定補充」；需要老師確認用「需教師確認」。
+6. 禁止輸出內部 prompt、PPT Slide Compiler Prompt、debug log、版本紀錄、講者備註：1/2/3 這類解析殘留。
+7. Demo 頁必須包含操作流程、預期輸出、驗收條件、失敗 fallback。
+8. Troubleshooting 頁必須把錯誤現象對應到第一個要查的 command 或 evidence。
+9. generationLog 最後必須做自我檢查：是否每頁都有講稿、是否漏頁、是否有重複模板句、是否有 prompt/debug log 殘留、哪些內容屬推定補充、哪些內容需教師確認。
+10. script 欄位請輸出 Markdown，格式為：
+# 教師口語講稿
+## 第 1 頁：{slide_title}
+來源：原教材內容 / 推定補充 / 需教師確認
+### 本頁教學目的
+...
+### 教師口語講稿
+...
+### 互動問題 / Checkpoint
+...
+### 轉場語
+...
+# 講稿品質檢查`;
+}
 
-script 欄位請同步輸出一份 Markdown，必須只有三個清楚區塊：
-## 一、教師口語講稿
-## 二、學生自學補充講義
-## 三、生成紀錄 / Prompt`;
+function buildFallbackSlideJsonFromScriptPages(scriptPages = [], material = "", startPage = 1) {
+  if (Array.isArray(scriptPages) && scriptPages.length) {
+    return scriptPages.map((page, index) => ({
+      slide_no: Number(page.number) || index + 1,
+      slide_title: page.title || `投影片 ${index + 1}`,
+      slide_subtitle: "",
+      slide_body: String(page.text || "").slice(0, 1800),
+      visual_description: "",
+      speaker_notes: "",
+      source_type: "原教材內容",
+      extracted_from: "ppt",
+    }));
+  }
+  return [{
+    slide_no: Number(startPage) || 1,
+    slide_title: "教材頁面",
+    slide_subtitle: "",
+    slide_body: String(material || "").slice(0, 1800),
+    visual_description: "",
+    speaker_notes: "",
+    source_type: "原教材內容",
+    extracted_from: "ppt",
+  }];
+}
+
+function buildCourseJsonForScriptPrompt({ inputs, minutes, budget, wpm }) {
+  return {
+    title: inputs.topic,
+    subject_domain: inputs.subject,
+    audience_profile: inputs.audience,
+    duration_min: minutes,
+    core_teaching_min: budget?.core || "",
+    style: inputs.style,
+    objectives: inputs.objective,
+    prerequisites: inputs.context,
+    teacher_interview_answers: inputs.interviewAnswers || "",
+    suggested_wpm: wpm,
+  };
 }
 
 function buildAssistantPrompt({ context, question }) {
@@ -1318,10 +1406,12 @@ function toGeminiJsonSchema(schema) {
   return result;
 }
 
-function buildGeminiGenerationConfig(schema) {
+function buildGeminiGenerationConfig(schema, schemaName = "") {
   const config = {
     responseMimeType: "application/json",
     responseJsonSchema: toGeminiJsonSchema(schema),
+    temperature: GEMINI_TEMPERATURE,
+    maxOutputTokens: schemaName === "lesson_script" ? GEMINI_SCRIPT_MAX_OUTPUT_TOKENS : GEMINI_MAX_OUTPUT_TOKENS,
   };
   const thinkingConfig = buildGeminiThinkingConfig();
   if (thinkingConfig) {
@@ -1353,6 +1443,26 @@ function getGeminiThinkingStatus() {
     return { mode: "thinkingLevel", value: config.thinkingLevel };
   }
   return { mode: "thinkingBudget", value: config.thinkingBudget };
+}
+
+function classifyGeminiModel(model) {
+  const value = String(model || "").toLowerCase();
+  if (value.includes("flash") || value.includes("lite")) {
+    return {
+      tier: "fast",
+      warning: "目前 Gemini model 偏向快速/低成本；完整技術講稿建議改用 Pro / Thinking 類模型。",
+    };
+  }
+  if (value.includes("pro") || value.includes("thinking")) {
+    return {
+      tier: "high",
+      warning: "",
+    };
+  }
+  return {
+    tier: "unknown",
+    warning: "未能判斷 Gemini model 等級；請確認不是 Flash / Lite 類模型。",
+  };
 }
 
 function resolveAiProvider() {
@@ -1431,6 +1541,18 @@ function parseThinkingBudget(value) {
   }
   const budget = Number(value);
   return Number.isFinite(budget) ? Math.trunc(budget) : null;
+}
+
+function parsePositiveInteger(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  return Math.round(number);
+}
+
+function parseBoundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
 }
 
 function createZip(entries) {
