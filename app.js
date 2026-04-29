@@ -2150,8 +2150,8 @@ async function generateScript() {
   const budget = calculateBudget(minutes);
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
-  const fragments = materialFragments(material, startPage, inputs);
-  const focusedMaterial = fragments.length ? fragments.join("\n\n") : material;
+  const scriptPages = getScriptPagesForLecture(material, startPage, inputs);
+  const focusedMaterial = pagesToScriptSource(scriptPages);
 
   state.budget = { ...budget, wpm, targetWords };
   setAiBusy(true, "生成講稿中");
@@ -2160,19 +2160,18 @@ async function generateScript() {
     const aiScript = await requestAi("script", {
       inputs,
       material: focusedMaterial,
+      scriptPages,
       startPage,
       minutes,
       budget,
       wpm,
       targetWords,
     });
-    if (aiScript?.script) {
-      const notes = Array.isArray(aiScript.teachingNotes) && aiScript.teachingNotes.length
-        ? `\n\n【教師課前提醒】\n${aiScript.teachingNotes.map((note) => `- ${note}`).join("\n")}`
-        : "";
-      state.script = ensureCompleteLectureScript(`${aiScript.script}${notes}`, {
+    if (aiScript?.script || aiScript?.teacherScriptPages?.length) {
+      state.script = composeFormalLectureScript(aiScript, {
         inputs,
-        fragments,
+        scriptPages,
+        fragments: scriptPages.map((page) => `第 ${page.number} 頁：${page.title}\n${page.text}`),
         focusedMaterial,
         startPage,
         minutes,
@@ -2181,10 +2180,7 @@ async function generateScript() {
         targetWords,
       });
       const actualWords = countWords(state.script);
-      const detail = actualWords < Math.round(targetWords * 0.9)
-        ? `仍低於目標，已補成 ${actualWords}/${targetWords} 字`
-        : `達到 ${actualWords}/${targetWords} 字`;
-      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依第 ${startPage} 頁與 ${minutes} 分鐘設定生成完整講稿（${detail}）`);
+      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（${actualWords} 字）`);
       renderScript();
       renderTimeBudget();
       markDriveBackupNeeded("講稿生成");
@@ -2197,28 +2193,10 @@ async function generateScript() {
     setAiBusy(false);
   }
 
-  const recap = state.slides
-    .slice(0, Math.min(startPage - 1, state.slides.length))
-    .slice(-3)
-    .map((slide) => slide.title)
-    .join("、");
-
-  state.script = [
-    `【開場與前情提要｜約 ${formatNumber(budget.opening)} 分鐘】`,
-    `各位同學，我們先用一分鐘把上一段內容接回來。上一堂課最重要的線索是：${recap || "上一段的核心概念與今日主題的連接"}。今天我們會從第 ${startPage} 頁開始，把「${inputs.topic}」推進到可以解釋、比較，並能回答真實情境問題的程度。`,
-    "",
-    `【核心講授｜約 ${formatNumber(budget.core)} 分鐘｜目標 ${targetWords} 字】`,
-    buildCoreScript(fragments, inputs),
-    "",
-    `【停頓互動｜約 ${formatNumber(budget.qa)} 分鐘】`,
-    `請先不要急著抄答案。用 30 秒寫下：如果你要向一位未學過 ${inputs.subject} 的朋友解釋「${inputs.topic}」，你會先講哪一個關鍵字？接著請兩位同學分享，我會把答案分成「概念正確」「需要修正」「可以再深化」三類。`,
-    "",
-    `【收束與緩衝｜約 ${formatNumber(budget.buffer)} 分鐘】`,
-    `最後我們整理三句話：第一，今天的核心概念是什麼；第二，它和上一堂課如何連接；第三，下一次你看到類似題目時要先找哪個線索。請把這三句寫在筆記最下方，作為本節 exit ticket。`,
-  ].join("\n");
-  state.script = ensureCompleteLectureScript(state.script, {
+  state.script = composeFormalLectureScript(null, {
     inputs,
-    fragments,
+    scriptPages,
+    fragments: scriptPages.map((page) => `第 ${page.number} 頁：${page.title}\n${page.text}`),
     focusedMaterial,
     startPage,
     minutes,
@@ -2227,7 +2205,7 @@ async function generateScript() {
     targetWords,
   });
 
-  logAudit("講稿生成", `本機規則依第 ${startPage} 頁與 ${minutes} 分鐘設定生成完整講稿（${countWords(state.script)}/${targetWords} 字）`);
+  logAudit("講稿生成", `本機規則依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（${countWords(state.script)} 字）`);
   renderScript();
   renderTimeBudget();
   markDriveBackupNeeded("講稿生成");
@@ -2250,20 +2228,318 @@ function reviseScript(mode) {
   persistState();
 }
 
+function getScriptPagesForLecture(material, startPage, inputs) {
+  const sourcePages = state.materialPages.length
+    ? state.materialPages
+    : clean(material)
+      ? textToPages(material)
+      : state.slides.map((slide) => slideToScriptPage(slide));
+  const cleanedPages = sourcePages
+    .map((page, index) => sanitizeScriptPage(page, index, inputs))
+    .filter((page) => page.text || page.title);
+  if (!cleanedPages.length && state.slides.length) {
+    return state.slides.map((slide, index) => sanitizeScriptPage(slideToScriptPage(slide), index, inputs));
+  }
+  const startIndex = clamp(startPage - 1, 0, Math.max(0, cleanedPages.length - 1));
+  return cleanedPages.slice(startIndex);
+}
+
+function slideToScriptPage(slide) {
+  const parts = [
+    slide.title,
+    slide.activity,
+    slide.speakerNotes,
+    slide.notes,
+    slide.suggestedVisual && `視覺提示：${slide.suggestedVisual}`,
+    slide.factCheckPoints?.length ? `需查核：${slide.factCheckPoints.join("；")}` : "",
+  ].filter(Boolean);
+  return {
+    number: slide.number,
+    title: slide.title,
+    text: parts.join("\n"),
+  };
+}
+
+function sanitizeScriptPage(page, index, inputs) {
+  const rawText = sanitizeLectureSourceText(page.text || "");
+  const rawTitle = clean(page.title) || firstClientLine(rawText) || `投影片 ${index + 1}`;
+  const title = sanitizeLectureTitle(rawTitle, index);
+  return {
+    number: Number(page.number) || index + 1,
+    title,
+    text: rawText,
+    pageType: inferLecturePageType(`${title}\n${rawText}\n${inputs.topic}`),
+    keyPoints: extractScriptKeyPoints(rawText, title),
+    sourceQuality: inferSourceQuality(rawText),
+  };
+}
+
+function sanitizeLectureSourceText(text) {
+  return String(text || "")
+    .replace(/\r/g, "\n")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^講者備註[:：]?\s*(\d+[\s、,.;：:]*){1,12}$/u.test(line))
+    .filter((line) => !/^(\d+[\s、,.;：:]*){1,12}$/u.test(line))
+    .filter((line) => !/^(PPT Slide Compiler Prompt|Revision Request|輸出格式|硬性限制|本頁素材|建議講者備忘稿|需查核事項)$/i.test(line))
+    .filter((line) => !/^(slide_no|slide_type|slide_goal|teaching_event|bloom_level|time_budget_min|layout_preference|visual_preference|linked_assessment)\s*:/i.test(line))
+    .filter((line) => !/^(1\. slide_title|2\. slide_subtitle|3\. slide_body|4\. speaker_notes|5\. suggested_visual|6\. suggested_layout|7\. presenter_cues|8\. fact_check_points)\s*:?/i.test(line))
+    .filter((line) => !/^[-*]\s*(使用 16:9|每頁|不要杜撰|資訊性圖像|slide_body|speaker_notes|Alt text|decorative)/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sanitizeLectureTitle(title, index) {
+  const cleaned = clean(title)
+    .replace(/^講者備註[:：]?\s*/u, "")
+    .replace(/^第\s*\d+\s*頁[:：]?\s*/u, "")
+    .replace(/^Slide\s*\d+[:：]?\s*/i, "")
+    .trim();
+  if (!cleaned || /^(\d+[\s、,.;：:]*){1,12}$/u.test(cleaned)) return `投影片 ${index + 1}`;
+  return cleaned.slice(0, 90);
+}
+
+function inferSourceQuality(text) {
+  if (/需教師確認|teacher confirm|待查|最新|版本|考試權重|校內政策|薪資|市場/i.test(text)) return "需教師確認";
+  if (/推定補充|assumption|未提供|資訊不足/i.test(text)) return "推定補充";
+  return "原教材內容";
+}
+
+function inferLecturePageType(text) {
+  const value = String(text || "").toLowerCase();
+  if (/troubleshooting|debug|error|failed|notready|pending|crashloop|排錯|故障|錯誤|events|logs|describe/.test(value)) return "troubleshooting";
+  if (/assessment|acceptance|rubric|checkpoint|skill test|evidence|驗收|評核|評量|測驗|交付|endpoint/.test(value)) return "assessment";
+  if (/demo|walkthrough|kubectl|yaml|terminal|command|示範|演示|操作|執行/.test(value)) return "demo";
+  if (/lab|實驗|hands-on|task/.test(value)) return "lab";
+  return "content";
+}
+
+function extractScriptKeyPoints(text, title) {
+  const lines = String(text || "")
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter((line) => line.length >= 4)
+    .filter((line) => line !== title)
+    .filter((line) => !/^(你是一位|請只用|course_json|workflow|style|objectives|prerequisites)/i.test(line));
+  return [...new Set(lines)].slice(0, 4);
+}
+
+function pagesToScriptSource(pages) {
+  return pages
+    .map((page) => [
+      `第 ${page.number} 頁：${page.title}`,
+      `頁面類型：${page.pageType}`,
+      page.text,
+    ].filter(Boolean).join("\n"))
+    .join("\n\n---\n\n");
+}
+
+function composeFormalLectureScript(aiScript, context) {
+  const pageScripts = mergeTeacherScriptPages(aiScript, context);
+  const handout = sanitizeGeneratedSection(aiScript?.selfStudyHandout) || buildStudentSelfStudyHandout(context, pageScripts);
+  const generationLog = buildScriptGenerationLog(aiScript, context);
+  return [
+    `# ${context.inputs.topic}｜逐頁授課稿`,
+    "",
+    `> 正式授課稿以 ${context.scriptPages.length} 頁 PPT 為準。教師口語講稿只放逐頁授課內容；Prompt 與生成紀錄放在最後一區，避免干擾授課。`,
+    "",
+    "## 一、教師口語講稿",
+    "",
+    pageScripts.map(renderTeacherPageScript).join("\n\n"),
+    "",
+    "## 二、學生自學補充講義",
+    "",
+    handout,
+    "",
+    "## 三、生成紀錄 / Prompt",
+    "",
+    generationLog,
+  ].join("\n");
+}
+
+function mergeTeacherScriptPages(aiScript, context) {
+  const aiPages = Array.isArray(aiScript?.teacherScriptPages) ? aiScript.teacherScriptPages : [];
+  return context.scriptPages.map((page, index) => {
+    const aiPage = aiPages.find((item) => Number(item.pageNumber) === Number(page.number))
+      || aiPages.find((item) => clean(item.title) && clean(item.title) === page.title);
+    const local = buildLocalTeacherPageScript(page, context, index);
+    if (!aiPage) return local;
+    return {
+      ...local,
+      sourceTags: normalizeSourceTags(aiPage.sourceTags, page),
+      teachingPurpose: sanitizeGeneratedSection(aiPage.teachingPurpose) || local.teachingPurpose,
+      spokenScript: sanitizeSpokenScript(aiPage.spokenScript) || local.spokenScript,
+      checkpoint: sanitizeGeneratedSection(aiPage.checkpoint) || local.checkpoint,
+      transition: sanitizeGeneratedSection(aiPage.transition) || local.transition,
+    };
+  });
+}
+
+function buildLocalTeacherPageScript(page, context, index) {
+  const keyPoints = page.keyPoints.length ? page.keyPoints : [page.title, context.inputs.objective || context.inputs.topic].filter(Boolean);
+  return {
+    pageNumber: page.number,
+    title: page.title,
+    pageType: page.pageType,
+    sourceTags: normalizeSourceTags([page.sourceQuality, "推定補充"], page),
+    teachingPurpose: buildTeachingPurpose(page, context, keyPoints),
+    spokenScript: buildPageSpokenScript(page, context, keyPoints, index),
+    checkpoint: buildPageCheckpoint(page, context, keyPoints),
+    transition: buildPageTransition(page, context, index),
+  };
+}
+
+function renderTeacherPageScript(page) {
+  return [
+    `### 第 ${page.pageNumber} 頁：${page.title}`,
+    "",
+    `- 內容來源標記：${page.sourceTags.join("、")}`,
+    "",
+    "#### 本頁教學目的",
+    page.teachingPurpose,
+    "",
+    "#### 教師口語講稿",
+    page.spokenScript,
+    "",
+    "#### 互動問題 / checkpoint",
+    page.checkpoint,
+    "",
+    "#### 轉場語",
+    page.transition,
+  ].join("\n");
+}
+
+function normalizeSourceTags(tags, page) {
+  const allowed = ["原教材內容", "推定補充", "需教師確認"];
+  const source = Array.isArray(tags) ? tags : [tags].filter(Boolean);
+  const normalized = source
+    .map((tag) => allowed.find((item) => String(tag || "").includes(item)))
+    .filter(Boolean);
+  if (page?.sourceQuality && !normalized.includes(page.sourceQuality)) normalized.unshift(page.sourceQuality);
+  if (!normalized.includes("原教材內容")) normalized.unshift("原教材內容");
+  if (page?.text?.length < 80 && !normalized.includes("需教師確認")) normalized.push("需教師確認");
+  return [...new Set(normalized)].slice(0, 3);
+}
+
+function buildTeachingPurpose(page, context, keyPoints) {
+  const firstPoint = keyPoints[0] || page.title;
+  if (page.pageType === "demo") {
+    return `【原教材內容】本頁用來把「${page.title}」轉成可跟做的示範流程。【推定補充】學生要看見操作順序、預期輸出，以及失敗時如何退回檢查。`;
+  }
+  if (page.pageType === "troubleshooting") {
+    return `【原教材內容】本頁聚焦錯誤現象與排查入口。【推定補充】學生要學會先找第一個 command 或 evidence，而不是直接猜答案。`;
+  }
+  if (page.pageType === "assessment") {
+    return `【原教材內容】本頁把學習成果轉成可驗收條件。【推定補充】驗收要能觀察、重做、截圖，或用 command output 證明。`;
+  }
+  return `【原教材內容】本頁先處理「${firstPoint.slice(0, 80)}」。【推定補充】教師要把投影片文字轉成一個清楚判斷，讓學生知道這頁和「${context.inputs.topic}」的關係。`;
+}
+
+function buildPageSpokenScript(page, context, keyPoints, index) {
+  const point = keyPoints[0] || page.title;
+  const second = keyPoints[1] || context.inputs.objective || "本課的學習目標";
+  const opener = [
+    "同學，這一頁我們先不要急着抄字，先看它想解決什麼問題。",
+    "來到這一頁，我希望大家把焦點放在判斷方法，而不是單一答案。",
+    "這頁的重點不是背名詞，而是看清楚它在整個任務中的位置。",
+    "請大家先看標題，再看畫面中最能證明結果的那一個線索。",
+  ][index % 4];
+
+  if (page.pageType === "demo") {
+    return `【原教材內容】${opener} 這個 demo 先由需求開始，再看要輸入哪個指令或 YAML，最後用 output 驗收。你要留意「${point.slice(0, 70)}」這個線索。【推定補充】正常情況下，我會先示範最小可行步驟，再請大家預測畫面會出現什麼。如果輸出不如預期，不要重做整個 lab，先回到上一個 command、log 或 YAML 欄位，找出是哪一層開始偏離。`;
+  }
+  if (page.pageType === "troubleshooting") {
+    return `【原教材內容】${opener} 如果你看到錯誤，第一步不是猜原因，而是把現象變成 evidence。針對「${point.slice(0, 70)}」，先問：我應該看 status、events、logs，還是 endpoint response？【推定補充】例如 Kubernetes 問題通常先用 get 看狀態，再用 describe 看 events，必要時才進 logs。這樣排查才有次序，也比較接近 CKA/CKAD 的實戰要求。`;
+  }
+  if (page.pageType === "assessment") {
+    return `【原教材內容】${opener} 這頁關心的是怎樣證明你真的完成任務，而不是只說「我做了」。請把「${point.slice(0, 70)}」改寫成可驗收句子。【推定補充】好的驗收條件一定能被重做，例如提交 YAML、command output、截圖、endpoint 測試或短答解釋。若別人在另一台環境無法確認，你的答案就還未足夠。`;
+  }
+  return `【原教材內容】${opener} 這頁提到「${point.slice(0, 80)}」，我們要把它接回「${second.slice(0, 70)}」。【推定補充】你可以把它理解成一個中間橋樑：先知道概念是什麼，再知道它在實作或評核中怎樣被看見。等一下我會請你用一句話說出本頁最重要的判斷，這比抄完整段文字更重要。`;
+}
+
+function buildPageCheckpoint(page, context, keyPoints) {
+  if (page.pageType === "demo") {
+    return `【推定補充】請學生指出 demo 的三個 evidence：輸入了什麼、預期輸出是什麼、失敗時第一個 fallback 檢查點是什麼。`;
+  }
+  if (page.pageType === "troubleshooting") {
+    return "【推定補充】請學生用 30 秒回答：這個錯誤現象第一個要查的 command / evidence 是哪一個？為什麼？";
+  }
+  if (page.pageType === "assessment") {
+    return "【推定補充】請學生把本頁要求改寫成一條 acceptance criterion，必須包含可觀察 evidence。";
+  }
+  return `【原教材內容】請學生用一句話說明「${(keyPoints[0] || page.title).slice(0, 60)}」的作用；【推定補充】再請一位同學補充它和本課任務的關係。`;
+}
+
+function buildPageTransition(page, context, index) {
+  if (page.pageType === "demo") {
+    return "完成示範流程後，下一頁我們會把剛才看到的 output 轉成學生自己要完成的任務。";
+  }
+  if (page.pageType === "troubleshooting") {
+    return "有了排查入口後，下一步要看這個證據如何變成修正動作或評核要求。";
+  }
+  if (page.pageType === "assessment") {
+    return "確認驗收條件後，我們就能回到前面的概念，檢查自己是否真的掌握。";
+  }
+  return index === context.scriptPages.length - 1
+    ? "這頁收束後，我們會整理今天的自學補充和課後檢查。"
+    : "掌握這一頁後，下一頁會把概念推進到更具體的操作、例子或驗收。";
+}
+
+function sanitizeGeneratedSection(value) {
+  const text = sanitizeLectureSourceText(value || "");
+  return text.replace(/^(本頁教學目的|教師口語講稿|互動問題\s*\/\s*checkpoint|轉場語)[:：]?\s*/u, "").trim();
+}
+
+function sanitizeSpokenScript(value) {
+  const text = sanitizeGeneratedSection(value);
+  if (!text || /PPT Slide Compiler Prompt|輸出格式|硬性限制/i.test(text)) return "";
+  return text;
+}
+
+function buildStudentSelfStudyHandout(context, pageScripts) {
+  const takeaways = pageScripts.slice(0, 8).map((page) => `- 第 ${page.pageNumber} 頁：${page.title}。自學時先讀本頁目的，再完成 checkpoint。`).join("\n");
+  const technicalCue = context.scriptPages.some((page) => ["demo", "troubleshooting", "assessment"].includes(page.pageType))
+    ? "\n\n### 技術課自學提醒\n- Demo 頁：記錄操作流程、預期輸出和 fallback。\n- Troubleshooting 頁：把錯誤現象對應到第一個 command 或 evidence。\n- 驗收頁：提交可觀察、可重做、可截圖或可用 command 證明的 evidence。"
+    : "";
+  return [
+    "### 自學閱讀路線",
+    "這份補充講義給學生課後自學使用，不取代教師逐頁口語講稿。閱讀時不要只看投影片文字，請把每頁都轉成一個「我能不能證明自己理解」的問題。",
+    "",
+    takeaways || `- 先重讀「${context.inputs.topic}」的核心概念，再完成每頁 checkpoint。`,
+    technicalCue,
+    "",
+    "### 課後自我檢查",
+    "1. 我能否用自己的話說出每頁最重要的一個判斷？",
+    "2. 若有 demo，我能否說出預期輸出與失敗時第一個檢查點？",
+    "3. 若有評核或 lab，我能否提交可重做的 evidence，而不是只交一張截圖？",
+  ].join("\n");
+}
+
+function buildScriptGenerationLog(aiScript, context) {
+  const mode = aiScript ? `${formatAiProviderName(state.ai.provider)} structured output` : "local fallback";
+  const notes = Array.isArray(aiScript?.teachingNotes) ? aiScript.teachingNotes : [];
+  return [
+    `- 生成模式：${mode}`,
+    `- PPT 頁數：${context.scriptPages.length}`,
+    `- 起始頁：${context.startPage}`,
+    `- 目標分鐘：${context.minutes}`,
+    `- 講稿規則：正式區只放逐頁教師口語稿；學生自學補充放第二區；Prompt / log 放第三區。`,
+    `- 來源標記：原教材內容 / 推定補充 / 需教師確認。`,
+    notes.length ? `- AI 課前提醒：${notes.join("；")}` : "- AI 課前提醒：無",
+    "",
+    "### Prompt 摘要",
+    "系統要求每頁固定輸出：本頁教學目的、教師口語講稿、互動問題 / checkpoint、轉場語；Demo、Troubleshooting、驗收條件頁需加入對應實務元素。",
+  ].join("\n");
+}
+
 async function completeScriptToTarget() {
   if (!state.script) {
     await generateScript();
   }
   const context = getScriptTargetContext();
-  let output = ensureCompleteLectureScript(state.script, context);
-  let guard = 0;
-
-  while (countWords(output) < context.targetWords && guard < 8) {
-    output = `${output}\n\n${buildScriptTargetExpansionBlock(context, guard)}`;
-    guard += 1;
-  }
-
-  state.script = appendScriptWordBudgetNote(output, context);
+  state.script = appendSelfStudyExpansionToFormalScript(state.script, context, "字數達標補充");
   logAudit("講稿字數達標", `已補到 ${countWords(state.script)}/${context.targetWords} 字`);
   renderScript();
   markDriveBackupNeeded("講稿字數達標");
@@ -2276,13 +2552,7 @@ function addCoreLectureDepth() {
     return;
   }
   const context = getScriptTargetContext();
-  state.script = [
-    state.script,
-    "",
-    buildScriptTargetExpansionBlock(context, 0),
-    "",
-    buildWorkedExampleDepthBlock(context),
-  ].join("\n");
+  state.script = appendSelfStudyExpansionToFormalScript(state.script, context, "核心講授補充");
   logAudit("講稿補核心", `補充核心講授段落後共 ${countWords(state.script)} 字`);
   renderScript();
   markDriveBackupNeeded("講稿補核心");
@@ -2297,17 +2567,34 @@ function getScriptTargetContext() {
   const targetWords = Math.round(budget.core * wpm);
   const material = clean(dom.materialText.value) || buildMaterialFromSlides();
   const startPage = clamp(Number(dom.startPage.value) || 1, 1, 999);
-  const fragments = materialFragments(material, startPage, inputs);
+  const scriptPages = getScriptPagesForLecture(material, startPage, inputs);
   return {
     inputs,
-    fragments,
-    focusedMaterial: fragments.length ? fragments.join("\n\n") : material,
+    scriptPages,
+    fragments: scriptPages.map((page) => `第 ${page.number} 頁：${page.title}\n${page.text}`),
+    focusedMaterial: pagesToScriptSource(scriptPages) || material,
     startPage,
     minutes,
     budget,
     wpm,
     targetWords,
   };
+}
+
+function appendSelfStudyExpansionToFormalScript(script, context, label) {
+  const additions = [
+    `### ${label}`,
+    buildScriptTargetExpansionBlock(context, 0),
+    "",
+    buildWorkedExampleDepthBlock(context),
+  ].join("\n\n");
+  if (script.includes("## 三、生成紀錄 / Prompt")) {
+    return script.replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
+  }
+  if (script.includes("## 二、學生自學補充講義")) {
+    return `${script}\n\n${additions}`;
+  }
+  return composeFormalLectureScript(null, context).replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
 }
 
 function renderScriptGoal() {
@@ -2317,8 +2604,8 @@ function renderScriptGoal() {
   const percent = context.targetWords ? Math.min(100, Math.round((words / context.targetWords) * 100)) : 0;
   const gap = Math.max(0, context.targetWords - words);
   const status = words >= context.targetWords
-    ? "已達標，可進入教師審稿。"
-    : `尚差約 ${gap} 字；可按「補到目標字數」生成完整自學版。`;
+    ? "正式口語稿已生成；字數主要用來估算學生自學補充量。"
+    : `正式口語稿以逐頁 120-180 字為準；尚差約 ${gap} 字只會補到學生自學講義，不會塞進正式講稿。`;
   dom.scriptGoalStatus.innerHTML = `
     <div class="target-meter-row">
       <div>

@@ -82,8 +82,34 @@ const lessonSchema = {
 const scriptSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["script", "teachingNotes"],
+  required: ["teacherScriptPages", "selfStudyHandout", "generationLog", "script", "teachingNotes"],
   properties: {
+    teacherScriptPages: {
+      type: "array",
+      minItems: 1,
+      maxItems: 80,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["pageNumber", "title", "sourceTags", "teachingPurpose", "spokenScript", "checkpoint", "transition"],
+        properties: {
+          pageNumber: { type: "number" },
+          title: { type: "string" },
+          sourceTags: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            items: { type: "string" },
+          },
+          teachingPurpose: { type: "string" },
+          spokenScript: { type: "string" },
+          checkpoint: { type: "string" },
+          transition: { type: "string" },
+        },
+      },
+    },
+    selfStudyHandout: { type: "string" },
+    generationLog: { type: "string" },
     script: { type: "string" },
     teachingNotes: {
       type: "array",
@@ -531,7 +557,7 @@ function parseOpenXmlMaterial(buffer, filename, extension) {
       const slideText = extractXmlText(entries.get(name).toString("utf8"));
       const notesName = `ppt/notesSlides/notesSlide${index + 1}.xml`;
       const notesText = entries.has(notesName)
-        ? extractXmlText(entries.get(notesName).toString("utf8"))
+        ? sanitizeParsedNotes(extractXmlText(entries.get(notesName).toString("utf8")))
         : "";
       const text = [slideText, notesText && `講者備註：${notesText}`].filter(Boolean).join("\n");
       return {
@@ -580,6 +606,18 @@ function parseOpenXmlMaterial(buffer, filename, extension) {
     text: pagesToText(pages),
     warning: "",
   };
+}
+
+function sanitizeParsedNotes(text) {
+  const lines = String(text || "")
+    .split(/\r?\n|(?<=\D)\s+(?=\d{1,2}\s*$)/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^(\d+[\s、,.;：:]*){1,12}$/u.test(line))
+    .filter((line) => !/^(slide|notes?|speaker notes?|講者備註|備註)\s*\d*$/i.test(line));
+  const cleaned = lines.join("\n").replace(/\s{2,}/g, " ").trim();
+  if (cleaned.length < 8) return "";
+  return cleaned;
 }
 
 function parsePdfMaterial(buffer, filename) {
@@ -1148,10 +1186,17 @@ Bloom 層次：${(inputs.bloom || []).join(", ")}
 4. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
 }
 
-function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, targetWords }) {
-  const minimumWords = Math.round(Number(targetWords || 0) * 0.92);
-  const maximumWords = Math.round(Number(targetWords || 0) * 1.12);
-  return `請根據教材與目前進度生成「完整講義式課堂講稿」。這個任務是把 PPT / PPT prompt / 教材文字轉成可直接口說，也可直接派給學生自讀的課堂講稿。
+function buildScriptPrompt({ inputs, material, scriptPages = [], startPage, minutes, budget, wpm }) {
+  const pages = Array.isArray(scriptPages) && scriptPages.length
+    ? scriptPages
+    : [{ number: startPage || 1, title: "教材頁面", text: String(material || "").slice(0, 1800) }];
+  const pageBrief = pages.map((page) => ({
+    number: page.number,
+    title: page.title,
+    pageType: page.pageType || "content",
+    text: String(page.text || "").slice(0, 1400),
+  }));
+  return `請根據已解析的 PPT 頁面生成「逐頁教師授課稿」。正式講稿不能把 PPT Prompt、教材大綱、教師講稿、學生自學講義混在一起。
 
 課題：${inputs.topic}
 科目：${inputs.subject}
@@ -1160,74 +1205,29 @@ function buildScriptPrompt({ inputs, material, startPage, minutes, budget, wpm, 
 目標分鐘：${minutes}
 核心講授分鐘：${budget.core}
 建議 WPM：${wpm}
-核心講授目標字數：約 ${targetWords}
-最低可接受字數：${minimumWords}
-最高建議字數：${maximumWords}
 風格：${inputs.style}
 教師追問回答：${inputs.interviewAnswers || "尚未提供"}
+PPT 實際頁數：${pages.length}
 
-教材內容：
-${String(material || "").slice(0, 12000)}
+已解析 PPT 頁面 JSON：
+${JSON.stringify(pageBrief, null, 2).slice(0, 28000)}
 
 硬性要求：
-1. 這不是摘要，不是投影片 prompt，也不是只給老師看的提示；請寫成學生自行閱讀也能理解該堂內容的完整講義式講稿。
-2. script 字數必須接近核心講授目標字數，最少 ${minimumWords} 字。不要只產生 1000-2000 字短稿。
-3. 若教材是 PPT Prompt，請把 prompt 轉化成可讀講義內容，不要重複「版面設計」「視覺元素」等 prompt 指令；要解釋該頁真正要教甚麼。
-4. 若教材有 speaker notes 或頁面 notes，視為高優先輸入；若資訊不足，請標示「推定補充」或「需教師確認」，不要裝作已有來源。
-5. 面向 Higher Diploma / IVE 雲端與系統管理學生：技術密度要實務化，優先使用 Linux、Kubernetes、kubectl、YAML、Ansible、Minikube、EKS、troubleshooting、public endpoint、assessment evidence 等場景。
-6. 不要大量使用「請教師補充」佔位；除非是薪資、最新市場數據、學校政策等必須查證的資料，其他技術概念要直接解釋。
-7. 講稿要可口語朗讀，也要可直接發給學生閱讀。請使用自然繁體中文，英文術語第一次出現時用「中文解釋 + English term」。
+1. teacherScriptPages 必須覆蓋上面 JSON 內每一頁，不可只挑重點頁。
+2. 每頁固定輸出四項：teachingPurpose、spokenScript、checkpoint、transition。
+3. spokenScript 要像老師真的在課堂會講的話，不要複製投影片文字，不要套同一段模板。每頁建議 120-180 個中文字；重點是可直接照講，不是追求總字數。
+4. sourceTags 必須使用以下三種文字：原教材內容、推定補充、需教師確認。直接來自 PPT 的內容標示原教材內容；AI 推論標示推定補充；缺少資料或需校本確認標示需教師確認。
+5. 移除疑似解析錯誤，例如「講者備註：1、2、3」、單純頁碼、片段編號、PPT prompt 的版面指令。
+6. 若頁面屬 demo：spokenScript 要包含講解流程、預期輸出、失敗時 fallback。
+7. 若頁面屬 troubleshooting：把錯誤現象對應到第一個要查的 command 或 evidence。
+8. 若頁面屬 assessment / acceptance：驗收條件必須可觀察、可重做、可截圖或可用 command 證明。
+9. selfStudyHandout 是第二區塊，供學生自學補充，不要放在正式逐頁講稿前。
+10. generationLog 是第三區塊，供後台或除錯，不要把 Prompt 放在正式講稿前。
 
-script 必須使用以下結構：
-# ${inputs.topic}｜${minutes} 分鐘完整進度講稿
-
-## Executive Summary
-- 用 3-5 點說明本堂課會學到甚麼、為何重要、會如何評核。
-
-## Assumptions / 需教師確認
-- 列出已知、未知、推定補充；不得把不確定內容寫成事實。
-
-## Lecture Map Table
-| Slide/Page | Title | Time Allocation | Cumulative Time | Main Points | Activities | Approx. Script Length |
-
-## Slide-by-Slide Full Spoken Script
-每一頁都要有：
-### Slide/Page {n}: {title}
-- Timestamp: [mm:ss - mm:ss]
-- Estimated time on this slide:
-- Learning objective: 使用可評量 action verb
-- Key concepts:
-- Why this slide matters:
-- Full spoken script:
-  寫成可直接朗讀、也可直接給學生閱讀的完整段落。每頁至少 2-5 段，重要頁可更長。
-- Example(s):
-- Demo / walkthrough suggestion:
-- Teacher questions:
-- Formative assessment prompt:
-- Transition to next slide:
-- Speaker cues:
-- Suggested visuals / diagrams / code snippets to add:
-- Difficulty adjustment:
-  - Core version
-  - Support version
-  - Challenge version
-- Accessibility notes:
-  - Suggested caption-ready text
-  - Alt text for informative visuals
-  - Mark decorative-only visuals when appropriate
-- Source note for teacher:
-  若是推定補充或需要查證，請清楚標示。
-
-## Final Summary and Q&A Prompts
-- 本堂 3 個核心 takeaway
-- 3 個 Q&A prompts
-- 1 個 exit ticket
-
-## Duration Check
-- 明確計算每段時間加總，總長必須 >= ${minutes} 分鐘。
-- 若內容不足，請增加 worked example、demo、checkpoint、常見錯誤、debug path，而不是閒聊填字。
-
-teachingNotes 只提供教師課前提醒，不要把主要內容放在 teachingNotes。`;
+script 欄位請同步輸出一份 Markdown，必須只有三個清楚區塊：
+## 一、教師口語講稿
+## 二、學生自學補充講義
+## 三、生成紀錄 / Prompt`;
 }
 
 function buildAssistantPrompt({ context, question }) {
