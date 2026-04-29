@@ -995,6 +995,40 @@ legend {
   grid-column: 1 / -1;
 }
 
+.lecture-middle-editor {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfffd;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 10px;
+}
+
+.lecture-middle-editor label {
+  color: var(--muted);
+  display: grid;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.lecture-middle-editor textarea {
+  background: white;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  line-height: 1.45;
+  min-width: 0;
+  padding: 9px 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.lecture-middle-editor .wide-field {
+  grid-column: 1 / -1;
+}
+
 .spec-chip-row {
   display: flex;
   flex-wrap: wrap;
@@ -1089,6 +1123,21 @@ legend {
   border-radius: 8px;
   background: #fffef9;
   padding: 10px;
+}
+
+.pptx-checklist.deferred {
+  display: grid;
+  gap: 3px;
+}
+
+.pptx-checklist.deferred strong {
+  color: var(--teal-dark);
+  font-size: 0.9rem;
+}
+
+.pptx-checklist.deferred.pending,
+.pptx-checklist.deferred.sent {
+  background: #fbfdfc;
 }
 
 .pptx-checklist summary {
@@ -1765,6 +1814,7 @@ legend {
   }
 
   .lecture-edit-grid,
+  .lecture-middle-editor,
   .pptx-slide-row {
     grid-template-columns: 1fr;
   }

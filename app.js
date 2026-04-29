@@ -906,7 +906,7 @@ function mergeLectureAiSummary(unit, aiUnit, inputs, index) {
     qaChecklist: Array.isArray(aiUnit.qaChecklist) && aiUnit.qaChecklist.length ? aiUnit.qaChecklist : unit.qaChecklist,
   };
   merged.hours = roundOne(merged.videoMinutes / 60);
-  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true, preserveAiContent: true });
+  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true, preserveAiContent: true, deferChecklist: true });
   return merged;
 }
 
@@ -929,6 +929,7 @@ function buildLectureAiRefreshPayload(unit) {
     recordingCue: unit.recordingCue || "",
     duplicateCleanup: unit.duplicateCleanup || "",
     qaChecklist: unit.qaChecklist || [],
+    feedback: unit.aiFeedback || "",
   };
 }
 
@@ -1223,17 +1224,31 @@ function normalizeLectureSubtopics(value, fallback = []) {
   return items.length ? Array.from(new Set(items)).slice(0, 12) : fallback;
 }
 
+function normalizeLectureTextList(value, fallback = []) {
+  const items = String(value || "")
+    .split(/\r?\n/)
+    .map((item) => clean(item).replace(/^[-*]\s*/, ""))
+    .filter(Boolean);
+  return items.length ? items.slice(0, 12) : fallback;
+}
+
 function calculateLectureSlideTarget(minutes, slidesPerHour) {
   return clamp(Math.round((Number(minutes) || 60) / 60 * (Number(slidesPerHour) || 12)), 6, 80);
 }
 
-async function updateAnnualLectureFromCard(index) {
+function applyAnnualLectureCardEdits(index, options = {}) {
   const plan = state.annualPlan;
   const unit = plan?.lectureUnits?.[index];
-  if (!plan || !unit) return;
+  if (!plan || !unit) return null;
   const titleInput = dom.annualLecturePlan.querySelector(`[data-lecture-title="${index}"]`);
   const subtopicsInput = dom.annualLecturePlan.querySelector(`[data-lecture-subtopics="${index}"]`);
   const minutesInput = dom.annualLecturePlan.querySelector(`[data-lecture-minutes="${index}"]`);
+  const recordingCueInput = dom.annualLecturePlan.querySelector(`[data-lecture-recording-cue="${index}"]`);
+  const outcomesInput = dom.annualLecturePlan.querySelector(`[data-lecture-outcomes="${index}"]`);
+  const pptFocusInput = dom.annualLecturePlan.querySelector(`[data-lecture-ppt-focus="${index}"]`);
+  const qaInput = dom.annualLecturePlan.querySelector(`[data-lecture-qa="${index}"]`);
+  const duplicateInput = dom.annualLecturePlan.querySelector(`[data-lecture-duplicate="${index}"]`);
+  const feedbackInput = dom.annualLecturePlan.querySelector(`[data-lecture-feedback="${index}"]`);
   const title = clean(titleInput?.value) || unit.title;
   const minutes = clamp(Number(minutesInput?.value) || unit.videoMinutes || 60, 10, 360);
   const subtopics = normalizeLectureSubtopics(subtopicsInput?.value, unit.subtopics || []);
@@ -1243,10 +1258,48 @@ async function updateAnnualLectureFromCard(index) {
   unit.videoMinutes = minutes;
   unit.hours = roundOne(minutes / 60);
   unit.pptSlides = calculateLectureSlideTarget(minutes, plan.inputs.slidesPerHour);
-  updateLectureDerivedFields(unit, plan.inputs, index);
+  unit.recordingCue = clean(recordingCueInput?.value) || unit.recordingCue || "";
+  unit.outcomes = normalizeLectureTextList(outcomesInput?.value, unit.outcomes || []);
+  unit.pptFocus = normalizeLectureTextList(pptFocusInput?.value, unit.pptFocus || []);
+  unit.qaChecklist = normalizeLectureTextList(qaInput?.value, unit.qaChecklist || []);
+  unit.duplicateCleanup = clean(duplicateInput?.value) || unit.duplicateCleanup || "";
+  unit.aiFeedback = clean(feedbackInput?.value || unit.aiFeedback || "");
+  updateLectureDerivedFields(unit, plan.inputs, index, { preserveAiContent: true, preserveAiChecklist: true, deferChecklist: true });
+  if (options.markChecklistStale) {
+    unit.pptxChecklistStatus = {
+      state: "pending",
+      message: "中間內容有新修改；按「送到 PPT / 03 講稿」時才會使用最新內容。",
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return unit;
+}
+
+function saveAnnualLectureCardEdits(index) {
+  const plan = state.annualPlan;
+  const unit = applyAnnualLectureCardEdits(index, { markChecklistStale: true });
+  if (!plan || !unit) return;
+  recalculateAnnualMetrics(plan);
+  syncAnnualLectureTimetable(plan);
+  markDriveBackupNeeded("Lecture/PPT 中間內容手動編輯");
+  renderAnnualPlan();
+  persistState();
+}
+
+async function updateAnnualLectureFromCard(index) {
+  const plan = state.annualPlan;
+  const unit = applyAnnualLectureCardEdits(index, { markChecklistStale: true });
+  if (!plan || !unit) return;
   unit.aiRefresh = {
     state: "running",
-    message: `AI 正在根據「${unit.title}」與 ${unit.videoMinutes} 分鐘重新生成中間教學重點、PPT spec 與逐頁清單。`,
+    message: `AI 正在根據「${unit.title}」與 ${unit.videoMinutes} 分鐘重新生成中間教學重點。`,
+    updatedAt: new Date().toISOString(),
+  };
+  unit.slideSpec = [];
+  unit.pptxChecklist = [];
+  unit.pptxChecklistStatus = {
+    state: "pending",
+    message: "逐頁 PPTX 清單暫緩；待你確認中間內容後，按「送到 PPT / 03 講稿」。",
     updatedAt: new Date().toISOString(),
   };
   recalculateAnnualMetrics(plan);
@@ -1254,57 +1307,29 @@ async function updateAnnualLectureFromCard(index) {
   renderAnnualPlan();
   persistState();
 
-  setAiBusy(true, "AI 更新 Lecture/PPT 清單中");
-  let summaryDone = false;
+  setAiBusy(true, "AI 更新 Lecture/PPT 中間內容中");
   try {
     const compactInputs = buildLectureAiInputs(plan.inputs);
     const summary = await requestAi("lecture-pptx-summary", {
       unit: buildLectureAiRefreshPayload(unit),
       inputs: compactInputs,
     });
-    summaryDone = true;
     Object.assign(unit, mergeLectureAiSummary(unit, summary, plan.inputs, index));
     unit.aiRefresh = {
-      state: "running",
-      message: `AI 已更新中間教學重點，正在分段生成 ${unit.pptSlides} 頁專業 PPTX 清單。`,
+      state: "done",
+      message: `AI 已更新中間內容：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides。`,
       updatedAt: new Date().toISOString(),
     };
-    renderAnnualPlan();
-    persistState();
-
-    const slideSpec = [];
-    const pptxChecklist = [];
-    const ranges = getLectureChecklistRanges(unit.pptSlides, 3);
-    for (const range of ranges) {
-      unit.aiRefresh = {
-        state: "running",
-        message: `AI 正在生成 PPTX 清單 ${range.startSlide}-${range.endSlide} / ${unit.pptSlides}。`,
-        updatedAt: new Date().toISOString(),
-      };
-      renderAnnualPlan();
-      const chunk = await requestAiWithRetry("lecture-pptx-checklist", {
-        unit: buildLectureAiRefreshPayload(unit),
-        inputs: compactInputs,
-        ...range,
-      }, 1);
-      slideSpec.push(...(Array.isArray(chunk.slideSpec) ? chunk.slideSpec : []));
-      pptxChecklist.push(...(Array.isArray(chunk.pptxChecklist) ? chunk.pptxChecklist : []));
-    }
-    if (!slideSpec.length || !pptxChecklist.length) {
-      throw new Error("AI 未回傳逐頁 PPTX 清單。");
-    }
-    unit.slideSpec = slideSpec.sort((a, b) => Number(a.slide_no || 0) - Number(b.slide_no || 0));
-    unit.pptxChecklist = pptxChecklist.sort((a, b) => Number(a.slide_no || 0) - Number(b.slide_no || 0));
-    unit.aiRefresh = {
-      state: "done",
-      message: `AI 已更新：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`,
+    unit.pptxChecklistStatus = {
+      state: "pending",
+      message: "中間內容已更新；確認或加意見後，可按「送到 PPT / 03 講稿」。",
       updatedAt: new Date().toISOString(),
     };
   } catch (error) {
     console.warn(error);
     unit.aiRefresh = {
-      state: summaryDone ? "partial" : "error",
-      message: `AI Lecture/PPT 清單更新失敗：${error.message}`,
+      state: "error",
+      message: `AI Lecture/PPT 中間內容更新失敗：${error.message}`,
       updatedAt: new Date().toISOString(),
     };
     if (dom.compareBox) dom.compareBox.textContent = unit.aiRefresh.message;
@@ -1323,12 +1348,13 @@ async function updateAnnualLectureFromCard(index) {
 }
 
 function updateLectureDerivedFields(unit, inputs, index, options = {}) {
-  const focus = inferLectureFocus(`${unit.title} ${(unit.subtopics || []).join(" ")}`);
+  const subtopics = unit.subtopics || [];
+  const focus = inferLectureFocus(`${unit.title} ${subtopics.join(" ")}`);
   const templateId = inferLectureTemplateId(unit.title, unit.pptSlides);
-  const resourceProfile = inferResourceProfile(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.resourceConstraints);
-  const officialAlignment = inferOfficialAlignment(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.officialRefs);
-  const firstSubtopic = unit.subtopics?.[0] || focus.task;
-  const secondSubtopic = unit.subtopics?.[1] || focus.practice || focus.task;
+  const resourceProfile = inferResourceProfile(`${unit.title} ${subtopics.join(" ")}`, inputs.resourceConstraints);
+  const officialAlignment = inferOfficialAlignment(`${unit.title} ${subtopics.join(" ")}`, inputs.officialRefs);
+  const firstSubtopic = subtopics[0] || focus.task;
+  const secondSubtopic = subtopics[1] || focus.practice || focus.task;
   const localRecordingCue = `${unit.videoMinutes} 分鐘教學，建議拆成 ${Math.max(2, Math.ceil(unit.videoMinutes / 20))} 段：概念、demo、checkpoint、lab bridge。`;
   const localOutcomes = [
     `學生能說明 ${focus.core} 的用途、限制與適用情境。`,
@@ -1369,28 +1395,35 @@ function updateLectureDerivedFields(unit, inputs, index, options = {}) {
     locale: "zh-TW",
     version: unit.metadata?.version || "0.1.0",
     model_name: state.ai?.model || "AI-required",
-    prompt_hash: `AI-seed:${hashString(`${inputs.moduleTitle}|${unit.title}|${unit.subtopics.join("|")}|${unit.videoMinutes}|${unit.pptSlides}`)}`,
+    prompt_hash: `AI-seed:${hashString(`${inputs.moduleTitle}|${unit.title}|${subtopics.join("|")}|${unit.videoMinutes}|${unit.pptSlides}`)}`,
     source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
     review_status: "draft",
   };
-  const localSlideSpec = buildLectureSlideSpec(unit.title, unit.pptSlides, unit.subtopics);
-  const localPptxChecklist = buildPptxGenerationChecklist({
-    topic: unit.title,
-    subtopics: unit.subtopics,
-    slideTarget: unit.pptSlides,
-    minutes: unit.videoMinutes,
-    templateId,
-    focus,
-    resourceProfile,
-    officialAlignment,
-  });
-  if (!options.preserveAiChecklist || !Array.isArray(unit.slideSpec) || !unit.slideSpec.length) {
-    unit.slideSpec = localSlideSpec;
+  if (options.deferChecklist) {
+    unit.slideSpec = [];
+    unit.pptxChecklist = [];
+  } else {
+    const localSlideSpec = buildLectureSlideSpec(unit.title, unit.pptSlides, subtopics);
+    const localPptxChecklist = buildPptxGenerationChecklist({
+      topic: unit.title,
+      subtopics,
+      slideTarget: unit.pptSlides,
+      minutes: unit.videoMinutes,
+      templateId,
+      focus,
+      resourceProfile,
+      officialAlignment,
+    });
+    if (!options.preserveAiChecklist || !Array.isArray(unit.slideSpec) || !unit.slideSpec.length) {
+      unit.slideSpec = localSlideSpec;
+    }
+    if (!options.preserveAiChecklist || !Array.isArray(unit.pptxChecklist) || !unit.pptxChecklist.length) {
+      unit.pptxChecklist = localPptxChecklist;
+    }
   }
-  if (!options.preserveAiChecklist || !Array.isArray(unit.pptxChecklist) || !unit.pptxChecklist.length) {
-    unit.pptxChecklist = localPptxChecklist;
+  if (!options.preserveAiContent || !Array.isArray(unit.qaChecklist) || !unit.qaChecklist.length) {
+    unit.qaChecklist = buildLectureQaChecklist();
   }
-  unit.qaChecklist = buildLectureQaChecklist();
 }
 
 function recalculateAnnualMetrics(plan) {
@@ -2216,7 +2249,7 @@ function renderLectureAiRefreshNotice(unit) {
 function getLectureRecordingCue(unit) {
   const refresh = getLectureRefreshState(unit);
   if (refresh?.state === "running") {
-    return "AI 正在重新生成教學段落、學習成果、PPT spec 與 QA gate。";
+    return "AI 正在重新生成教學段落、學習成果、PPT focus 與 QA gate。";
   }
   if (refresh?.state === "error") {
     return refresh.message || "AI 未能完成更新，請檢查 API key / Secrets / server 狀態。";
@@ -2238,18 +2271,50 @@ function renderLectureOutcomeList(unit) {
 
 function getLecturePptSpecSummary(unit) {
   const refresh = getLectureRefreshState(unit);
-  if (refresh?.state === "running") return "PPT spec：AI 正在重寫逐頁 purpose / visible text / speaker notes...";
-  if (refresh?.state === "partial") return "PPT spec：AI 已更新中間教學重點，但逐頁 PPTX 清單未完整完成。";
+  if (refresh?.state === "running") return "PPT spec：AI 正在重寫中間教學重點，逐頁 PPTX 清單暫不生成。";
+  if (refresh?.state === "partial") return "PPT spec：AI 已更新中間教學重點，逐頁 PPTX 清單暫不生成。";
   if (refresh?.state === "error") return "PPT spec：AI 未完成，暫停使用舊清單，避免輸出錯誤主題。";
-  return `PPT spec：${(unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → ")}${unit.slideSpec?.length > 4 ? "..." : ""}`;
+  return `PPT focus：${(unit.pptFocus || []).slice(0, 3).join(" → ")}`;
 }
 
 function getLectureQaSummary(unit) {
   const refresh = getLectureRefreshState(unit);
-  if (refresh?.state === "running") return "QA：AI 正在對齊 duration、slide target、teaching purpose 與 lab bridge。";
-  if (refresh?.state === "partial") return "QA：中間教學重點已更新；請重試以補齊逐頁 PPTX 清單。";
+  if (refresh?.state === "running") return "QA：AI 正在對齊 duration、teaching purpose、lab bridge 與錯題防線。";
+  if (refresh?.state === "partial") return "QA：中間教學重點已更新；確認後可送到 PPT / 03 講稿。";
   if (refresh?.state === "error") return "QA：請先修復 AI 連線後重新生成。";
   return `QA：${(unit.qaChecklist || []).slice(0, 3).join("；")}`;
+}
+
+function renderLectureMiddleEditor(unit, index, canEditAnnual) {
+  const disabled = canEditAnnual ? "" : "disabled";
+  return `
+    <div class="lecture-middle-editor">
+      <label class="wide-field">
+        中間教學流程
+        <textarea rows="3" data-lecture-edit-index="${index}" data-lecture-recording-cue="${index}" ${disabled}>${escapeHtml(unit.recordingCue || "")}</textarea>
+      </label>
+      <label>
+        學習成果
+        <textarea rows="5" data-lecture-edit-index="${index}" data-lecture-outcomes="${index}" ${disabled}>${escapeHtml((unit.outcomes || []).join("\n"))}</textarea>
+      </label>
+      <label>
+        PPT 組織重點
+        <textarea rows="5" data-lecture-edit-index="${index}" data-lecture-ppt-focus="${index}" ${disabled}>${escapeHtml((unit.pptFocus || []).join("\n"))}</textarea>
+      </label>
+      <label>
+        QA Gate
+        <textarea rows="4" data-lecture-edit-index="${index}" data-lecture-qa="${index}" ${disabled}>${escapeHtml((unit.qaChecklist || []).join("\n"))}</textarea>
+      </label>
+      <label>
+        避免重複 / 差異化
+        <textarea rows="4" data-lecture-edit-index="${index}" data-lecture-duplicate="${index}" ${disabled}>${escapeHtml(unit.duplicateCleanup || "")}</textarea>
+      </label>
+      <label class="wide-field">
+        我的修改意見
+        <textarea rows="3" data-lecture-edit-index="${index}" data-lecture-feedback="${index}" placeholder="例如：加強 systemctl demo；減少 Kubernetes；要加入服務啟動失敗排查。" ${disabled}>${escapeHtml(unit.aiFeedback || "")}</textarea>
+      </label>
+    </div>
+  `;
 }
 
 function renderAnnualPlan() {
@@ -2298,36 +2363,34 @@ function renderAnnualPlan() {
           <strong>${escapeHtml(unit.title)}</strong>
         </div>
         <div class="card-actions">
-          <button class="action-button ghost" type="button" data-lecture-refresh="${index}" ${canEditAnnual ? "" : "disabled"}>更新清單</button>
-          <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT 流程</button>
+          <button class="action-button ghost" type="button" data-lecture-refresh="${index}" ${canEditAnnual ? "" : "disabled"}>更新中間內容</button>
+          <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT / 03 講稿</button>
         </div>
       </div>
       <div class="lecture-edit-grid">
         <label>
           大題目
-          <input type="text" data-lecture-title="${index}" value="${escapeHtml(unit.title)}" ${canEditAnnual ? "" : "disabled"} />
+          <input type="text" data-lecture-edit-index="${index}" data-lecture-title="${index}" value="${escapeHtml(unit.title)}" ${canEditAnnual ? "" : "disabled"} />
         </label>
         <label>
           教學時間（分鐘）
-          <input type="number" min="10" max="360" step="5" data-lecture-minutes="${index}" value="${escapeHtml(unit.videoMinutes || Math.round((unit.hours || 1) * 60))}" ${canEditAnnual ? "" : "disabled"} />
+          <input type="number" min="10" max="360" step="5" data-lecture-edit-index="${index}" data-lecture-minutes="${index}" value="${escapeHtml(unit.videoMinutes || Math.round((unit.hours || 1) * 60))}" ${canEditAnnual ? "" : "disabled"} />
         </label>
         <label class="wide-field">
           子題目
-          <textarea rows="3" data-lecture-subtopics="${index}" ${canEditAnnual ? "" : "disabled"}>${escapeHtml((unit.subtopics?.length ? unit.subtopics : inferLectureSubtopics(unit.title, null, unit.focus || inferLectureFocus(unit.title))).join("\n"))}</textarea>
+          <textarea rows="3" data-lecture-edit-index="${index}" data-lecture-subtopics="${index}" ${canEditAnnual ? "" : "disabled"}>${escapeHtml((unit.subtopics?.length ? unit.subtopics : inferLectureSubtopics(unit.title, null, unit.focus || inferLectureFocus(unit.title))).join("\n"))}</textarea>
         </label>
       </div>
       ${renderLectureAiRefreshNotice(unit)}
-      <p>${escapeHtml(getLectureRecordingCue(unit))}</p>
+      ${renderLectureMiddleEditor(unit, index, canEditAnnual)}
       <div class="spec-chip-row">
         <span>${escapeHtml(unit.templateId || "LT-CORE")}</span>
         <span>${escapeHtml(unit.metadata?.module_id || "module")}</span>
         <span>${escapeHtml(unit.metadata?.difficulty || "intermediate")}</span>
         <span>${escapeHtml((unit.metadata?.resource_profile || []).slice(0, 3).join(" / "))}</span>
       </div>
-      ${renderLectureOutcomeList(unit)}
       <small>${escapeHtml(getLecturePptSpecSummary(unit))}</small>
       <small>${escapeHtml(getLectureQaSummary(unit))}</small>
-      <small>${escapeHtml(unit.duplicateCleanup)}</small>
       ${renderLecturePptxChecklist(unit)}
     </article>
   `).join("");
@@ -2373,6 +2436,9 @@ function renderAnnualPlan() {
   dom.annualLecturePlan.querySelectorAll("[data-lecture-refresh]").forEach((button) => {
     button.addEventListener("click", () => updateAnnualLectureFromCard(Number(button.dataset.lectureRefresh)));
   });
+  dom.annualLecturePlan.querySelectorAll("[data-lecture-edit-index]").forEach((field) => {
+    field.addEventListener("change", () => saveAnnualLectureCardEdits(Number(field.dataset.lectureEditIndex)));
+  });
   dom.annualLabPlan.querySelectorAll("[data-lab-content]").forEach((button) => {
     button.addEventListener("click", () => generateLabContent(Number(button.dataset.labContent)));
   });
@@ -2386,33 +2452,15 @@ function annualMetric(label, value, hint) {
 }
 
 function renderLecturePptxChecklist(unit) {
-  const checklist = getLecturePptxChecklist(unit);
+  const status = unit.pptxChecklistStatus || {
+    state: "pending",
+    message: "中間內容確認後，按「送到 PPT / 03 講稿」才會生成教材與講稿素材。",
+  };
   return `
-    <details class="pptx-checklist">
-      <summary>專業 PPTX 生成清單｜${escapeHtml(checklist.length)} slides</summary>
-      <div class="pptx-checklist-grid">
-        ${checklist.map((slide) => `
-          <section class="pptx-slide-row">
-            <div>
-              <span>S${escapeHtml(slide.slide_no)}｜${escapeHtml(slide.teaching_minutes)} min｜${escapeHtml(slide.template_id)}</span>
-              <strong>${escapeHtml(slide.title)}</strong>
-              <small>大題目：${escapeHtml(slide.big_topic)}</small>
-              <small>子題目：${escapeHtml(slide.subtopic)}</small>
-            </div>
-            <div>
-              <span>Visible Text</span>
-              <ul>${(slide.visible_text || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-            </div>
-            <div>
-              <span>Visual / Notes / QA</span>
-              <p>${escapeHtml(slide.visual_direction)}</p>
-              <small>${escapeHtml((slide.speaker_notes || []).join(" "))}</small>
-              <small>QA：${escapeHtml((slide.qa_gate || []).join("；"))}</small>
-            </div>
-          </section>
-        `).join("")}
-      </div>
-    </details>
+    <div class="pptx-checklist deferred ${escapeHtml(status.state || "pending")}">
+      <strong>PPTX 逐頁清單暫緩｜${escapeHtml(unit.pptSlides || 0)} slides</strong>
+      <small>${escapeHtml(status.message || "待確認中間內容。")}</small>
+    </div>
   `;
 }
 
@@ -3131,7 +3179,7 @@ function buildAssessmentRubricRows(assessment) {
 }
 
 async function sendAnnualLectureToBuilder(index) {
-  const unit = state.annualPlan?.lectureUnits?.[index];
+  const unit = applyAnnualLectureCardEdits(index, { markChecklistStale: true }) || state.annualPlan?.lectureUnits?.[index];
   if (!unit) return;
   const inputs = {
     topic: unit.title,
@@ -3139,17 +3187,18 @@ async function sendAnnualLectureToBuilder(index) {
     audience: state.annualPlan.inputs.audience,
     duration: clamp(unit.videoMinutes, 10, 180),
     style: "考試導向",
-    objective: unit.outcomes.join("；"),
+    objective: (unit.outcomes || []).join("；"),
     context: [
       state.annualPlan.inputs.context,
       `PPT deck：${unit.deckName}`,
       `Template：${unit.templateId || unit.metadata?.template_id || "LT-CORE"}`,
-      `PPT focus：${unit.pptFocus.join("、")}`,
+      `Teaching flow：${unit.recordingCue || ""}`,
+      `PPT focus：${(unit.pptFocus || []).join("、")}`,
       `Subtopics：${(unit.subtopics || []).join("、")}`,
       `Metadata：${JSON.stringify(unit.metadata || {}, null, 2)}`,
-      `Detailed PPTX checklist：${JSON.stringify(getLecturePptxChecklist(unit), null, 2)}`,
       `QA checklist：${(unit.qaChecklist || []).join("；")}`,
       `Duplicate cleanup：${unit.duplicateCleanup}`,
+      unit.aiFeedback ? `Teacher feedback：${unit.aiFeedback}` : "",
     ].filter(Boolean).join("\n"),
     bloom: ["understand", "apply", "analyze", "evaluate"],
   };
@@ -3159,7 +3208,13 @@ async function sendAnnualLectureToBuilder(index) {
   syncDefaultCoreMinutes(true);
   switchView("builder");
   await generateLesson();
-  logAudit("年度規劃", `${unit.id} 已送到教材共創 / PPT 流程`);
+  sendSlidesToScriptMaterial();
+  unit.pptxChecklistStatus = {
+    state: "sent",
+    message: "已根據確認後的中間內容送到 PPT 流程，並轉到第 03 進度講稿。",
+    updatedAt: new Date().toISOString(),
+  };
+  logAudit("年度規劃", `${unit.id} 已送到 PPT 流程並轉到 03 進度講稿`);
   markDriveBackupNeeded("年度 lecture 轉 PPT");
   persistState();
 }
@@ -6048,16 +6103,9 @@ function buildAnnualMarkdown(plan) {
 - Metadata：${Object.entries(unit.metadata || {}).map(([key, value]) => `${key}=${Array.isArray(value) ? value.join("/") : value}`).join("；")}
 - Recording cue：${unit.recordingCue}
 - Learning outcomes：
-${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
-- PPT focus：${unit.pptFocus.join("、")}
-- PPT slide spec：
-${(unit.slideSpec || []).map((item) => `  - S${item.slide_no} ${item.section}：${item.purpose}`).join("\n")}
-- 專業 PPTX 生成清單：
-${getLecturePptxChecklist(unit).map((slide) => `  - S${slide.slide_no} ${slide.title}｜大題目：${slide.big_topic}｜子題目：${slide.subtopic}｜${slide.teaching_minutes} min
-    - Visible text：${slide.visible_text.join("；")}
-    - Visual：${slide.visual_direction}
-    - Speaker notes：${slide.speaker_notes.join(" ")}
-    - QA：${slide.qa_gate.join("；")}`).join("\n")}
+${(unit.outcomes || []).map((item) => `  - ${item}`).join("\n")}
+- PPT focus：${(unit.pptFocus || []).join("、")}
+- PPT / 03 狀態：${unit.pptxChecklistStatus?.message || "逐頁 PPTX 清單暫緩；確認中間內容後才送到 PPT 流程與第 03 進度講稿。"}
 - QA checklist：
 ${(unit.qaChecklist || []).map((item) => `  - ${item}`).join("\n")}
 - Dedup：${unit.duplicateCleanup}`).join("\n\n");

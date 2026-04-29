@@ -1733,7 +1733,8 @@ function buildLecturePptxSummaryPrompt({ unit, inputs }) {
 5. duplicateCleanup 必須指出若與前後 deck 重複，應保留什麼差異。
 6. qaChecklist 必須能阻擋錯 topic、錯 duration、缺 speaker notes、缺 lab bridge 的 PPT。
 7. 不可保留與新大題目無關的 Kubernetes / CKA / CKAD 內容，除非使用者輸入明確要求。
-8. 使用繁體中文；技術命令、產品名可保留英文。
+8. 若 Lecture 最新資料包含 feedback，必須把教師意見落實到 outcomes、pptFocus、recordingCue、duplicateCleanup 與 qaChecklist。
+9. 使用繁體中文；技術命令、產品名可保留英文。
 
 課程輸入：
 ${JSON.stringify(inputs || {}, null, 2)}
