@@ -945,6 +945,23 @@ function getLectureChecklistRanges(slideTarget, chunkSize = 10) {
   return ranges;
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestAiWithRetry(type, payload, retries = 1) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await requestAi(type, payload);
+    } catch (error) {
+      const retryable = /failed to fetch|network|timeout|502|503|504/i.test(error.message || "");
+      if (!retryable || attempt === retries) throw error;
+      await wait(900 * (attempt + 1));
+    }
+  }
+  throw new Error("AI request failed after retry.");
+}
+
 function buildLectureTopics(customTopics, count, weeklyLectures = []) {
   const defaults = [
     "進階 Linux 銜接：systemd、networking、package、logs",
@@ -1169,7 +1186,7 @@ async function updateAnnualLectureFromCard(index) {
 
     const slideSpec = [];
     const pptxChecklist = [];
-    const ranges = getLectureChecklistRanges(unit.pptSlides, 10);
+    const ranges = getLectureChecklistRanges(unit.pptSlides, 3);
     for (const range of ranges) {
       unit.aiRefresh = {
         state: "running",
@@ -1177,11 +1194,11 @@ async function updateAnnualLectureFromCard(index) {
         updatedAt: new Date().toISOString(),
       };
       renderAnnualPlan();
-      const chunk = await requestAi("lecture-pptx-checklist", {
+      const chunk = await requestAiWithRetry("lecture-pptx-checklist", {
         unit: buildLectureAiRefreshPayload(unit),
         inputs: compactInputs,
         ...range,
-      });
+      }, 1);
       slideSpec.push(...(Array.isArray(chunk.slideSpec) ? chunk.slideSpec : []));
       pptxChecklist.push(...(Array.isArray(chunk.pptxChecklist) ? chunk.pptxChecklist : []));
     }

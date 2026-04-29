@@ -1475,7 +1475,7 @@ async function createStructuredResponse({ provider, schemaName, schema, input })
 
 async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {
   const endpoint = getOpenAiCompatibleChatEndpoint();
-  const maxTokens = schemaName === "lesson_script" ? OPENAI_COMPAT_SCRIPT_MAX_TOKENS : OPENAI_COMPAT_MAX_TOKENS;
+  const maxTokens = getOpenAiCompatibleMaxTokens(schemaName);
   const requestBody = {
     model: OPENAI_COMPAT_MODEL,
     messages: [
@@ -1509,6 +1509,21 @@ async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, in
   }
 
   return parseStructuredJson(text, "OpenAI-compatible");
+}
+
+function getOpenAiCompatibleMaxTokens(schemaName) {
+  if (schemaName === "lesson_script") return OPENAI_COMPAT_SCRIPT_MAX_TOKENS;
+  const nonStreamingSchemas = new Set([
+    "lecture_pptx_summary",
+    "lecture_pptx_checklist_chunk",
+    "slide_revision",
+    "classroom_assistant",
+    "student_grounded_qa",
+  ]);
+  if (nonStreamingSchemas.has(schemaName)) {
+    return Math.min(OPENAI_COMPAT_MAX_TOKENS, 4096);
+  }
+  return OPENAI_COMPAT_MAX_TOKENS;
 }
 
 async function postOpenAiCompatibleChat(endpoint, body) {
