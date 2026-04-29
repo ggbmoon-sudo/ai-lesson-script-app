@@ -3,6 +3,8 @@ const DRIVE_SETTINGS_KEY = "eduscript-ai-drive-settings-v1";
 const DRIVE_BACKUP_PREFIX = "eduscript-ai-backup-";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GOOGLE_IDENTITY_SCRIPT = "https://accounts.google.com/gsi/client";
+const DEFAULT_CORE_RATIO = 0.85;
+const CHECKPOINT_INTERVAL = 5;
 
 let driveAccessToken = "";
 let driveTokenClient = null;
@@ -320,6 +322,7 @@ function bindDom() {
   dom.materialText = document.getElementById("materialTextInput");
   dom.startPage = document.getElementById("startPageInput");
   dom.scriptMinutes = document.getElementById("scriptMinutesInput");
+  dom.coreMinutes = document.getElementById("coreMinutesInput");
   dom.wpmProfile = document.getElementById("wpmProfileInput");
   dom.pace = document.getElementById("paceInput");
   dom.timeBudget = document.getElementById("timeBudget");
@@ -443,8 +446,21 @@ function bindEvents() {
     });
   });
 
-  [dom.scriptMinutes, dom.wpmProfile, dom.pace].forEach((input) => {
-    input.addEventListener("change", renderTimeBudget);
+  dom.scriptMinutes.addEventListener("change", () => {
+    syncDefaultCoreMinutes();
+    state.budget = null;
+    renderTimeBudget();
+  });
+  dom.coreMinutes.addEventListener("change", () => {
+    dom.coreMinutes.dataset.autoCore = "false";
+    state.budget = null;
+    renderTimeBudget();
+  });
+  [dom.wpmProfile, dom.pace].forEach((input) => {
+    input.addEventListener("change", () => {
+      state.budget = null;
+      renderTimeBudget();
+    });
   });
 }
 
@@ -1983,6 +1999,7 @@ async function sendAnnualLectureToBuilder(index) {
 
   setFormInputs(inputs);
   dom.scriptMinutes.value = String(Math.max(10, Math.round(unit.videoMinutes)));
+  syncDefaultCoreMinutes(true);
   switchView("builder");
   await generateLesson();
   logAudit("年度規劃", `${unit.id} 已送到教材共創 / PPT 流程`);
@@ -2153,7 +2170,7 @@ async function generateScript() {
   const inputs = state.lastLessonInputs || getLessonInputs();
   const startPage = clamp(Number(dom.startPage.value) || 1, 1, 999);
   const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
-  const budget = calculateBudget(minutes);
+  const budget = calculateBudget(minutes, getConfiguredCoreMinutes(minutes));
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
   const slideJson = getCleanSlideJsonForLecture(material, startPage, inputs);
@@ -2191,8 +2208,8 @@ async function generateScript() {
         wpm,
         targetWords,
       });
-      const actualWords = countWords(state.script);
-      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（${actualWords} 字）`);
+      const actualWords = countCoreLectureWords(state.script);
+      logAudit("講稿生成", `${formatAiProviderName(state.ai.provider)} 依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（核心講授 ${actualWords} 字）`);
       renderScript();
       renderTimeBudget();
       markDriveBackupNeeded("講稿生成");
@@ -2217,7 +2234,7 @@ async function generateScript() {
     targetWords,
   });
 
-  logAudit("講稿生成", `本機規則依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（${countWords(state.script)} 字）`);
+  logAudit("講稿生成", `本機規則依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（核心講授 ${countCoreLectureWords(state.script)} 字）`);
   renderScript();
   renderTimeBudget();
   markDriveBackupNeeded("講稿生成");
@@ -2420,6 +2437,8 @@ function buildCourseJsonForScript(inputs, meta = {}) {
     teacher_interview_answers: inputs.interviewAnswers || "",
     suggested_wpm: meta.wpm || "",
     target_words_reference: meta.targetWords || "",
+    core_teaching_ratio: meta.minutes ? roundOne((meta.budget?.core || 0) / meta.minutes) : DEFAULT_CORE_RATIO,
+    checkpoint_policy: `只在重點頁加入互動問題，約每 ${CHECKPOINT_INTERVAL} 頁 1 次`,
   };
 }
 
@@ -2521,24 +2540,29 @@ function composeFormalLectureScript(aiScript, context) {
 
 function mergeTeacherScriptPages(aiScript, context) {
   const aiPages = Array.isArray(aiScript?.teacherScriptPages) ? aiScript.teacherScriptPages : [];
+  const checkpointIndexes = getCheckpointIndexSet(context.scriptPages);
   return context.scriptPages.map((page, index) => {
     const aiPage = aiPages.find((item) => Number(item.pageNumber) === Number(page.number))
       || aiPages.find((item) => clean(item.title) && clean(item.title) === page.title);
-    const local = buildLocalTeacherPageScript(page, context, index);
+    const local = buildLocalTeacherPageScript(page, context, index, checkpointIndexes);
+    const shouldUseCheckpoint = checkpointIndexes.has(index);
     if (!aiPage) return local;
     return {
       ...local,
       sourceTags: normalizeSourceTags(aiPage.sourceTags, page),
       teachingPurpose: sanitizeGeneratedSection(aiPage.teachingPurpose) || local.teachingPurpose,
       spokenScript: sanitizeSpokenScript(aiPage.spokenScript) || local.spokenScript,
-      checkpoint: sanitizeGeneratedSection(aiPage.checkpoint) || local.checkpoint,
+      checkpoint: shouldUseCheckpoint ? sanitizeGeneratedSection(aiPage.checkpoint) || local.checkpoint : "",
       transition: sanitizeGeneratedSection(aiPage.transition) || local.transition,
     };
   });
 }
 
-function buildLocalTeacherPageScript(page, context, index) {
+function buildLocalTeacherPageScript(page, context, index, checkpointIndexes = null) {
   const keyPoints = page.keyPoints.length ? page.keyPoints : [page.title, context.inputs.objective || context.inputs.topic].filter(Boolean);
+  const checkpoint = (checkpointIndexes ? checkpointIndexes.has(index) : shouldIncludeCheckpoint(page, index, context.scriptPages.length))
+    ? buildPageCheckpoint(page, context, keyPoints)
+    : "";
   return {
     pageNumber: page.number,
     title: page.title,
@@ -2546,13 +2570,13 @@ function buildLocalTeacherPageScript(page, context, index) {
     sourceTags: normalizeSourceTags([page.sourceQuality, "推定補充"], page),
     teachingPurpose: buildTeachingPurpose(page, context, keyPoints),
     spokenScript: buildPageSpokenScript(page, context, keyPoints, index),
-    checkpoint: buildPageCheckpoint(page, context, keyPoints),
+    checkpoint,
     transition: buildPageTransition(page, context, index),
   };
 }
 
 function renderTeacherPageScript(page) {
-  return [
+  const lines = [
     `### 第 ${page.pageNumber} 頁：${page.title}`,
     "",
     `- 內容來源標記：${page.sourceTags.join("、")}`,
@@ -2563,12 +2587,34 @@ function renderTeacherPageScript(page) {
     "#### 教師口語講稿",
     page.spokenScript,
     "",
-    "#### 互動問題 / checkpoint",
-    page.checkpoint,
-    "",
-    "#### 轉場語",
-    page.transition,
-  ].join("\n");
+  ];
+  if (clean(page.checkpoint)) {
+    lines.push("#### 互動問題 / checkpoint", page.checkpoint, "");
+  }
+  lines.push("#### 轉場語", page.transition);
+  return lines.join("\n");
+}
+
+function shouldIncludeCheckpoint(page, index, totalPages) {
+  const type = page?.pageType || "";
+  if (["demo", "troubleshooting", "assessment", "lab"].includes(type)) return true;
+  if (totalPages <= CHECKPOINT_INTERVAL) return index === totalPages - 1;
+  return (index + 1) % CHECKPOINT_INTERVAL === 0;
+}
+
+function getCheckpointIndexSet(pages = []) {
+  const total = pages.length;
+  if (!total) return new Set();
+  const targetCount = Math.max(1, Math.ceil(total / CHECKPOINT_INTERVAL));
+  const candidates = [];
+  pages.forEach((page, index) => {
+    if (["demo", "troubleshooting", "assessment", "lab"].includes(page.pageType)) candidates.push(index);
+  });
+  pages.forEach((_, index) => {
+    if ((index + 1) % CHECKPOINT_INTERVAL === 0) candidates.push(index);
+  });
+  candidates.push(total - 1);
+  return new Set([...new Set(candidates)].slice(0, targetCount));
 }
 
 function normalizeSourceTags(tags, page) {
@@ -2659,15 +2705,18 @@ function sanitizeSpokenScript(value) {
 }
 
 function buildStudentSelfStudyHandout(context, pageScripts) {
-  const takeaways = pageScripts.slice(0, 8).map((page) => `- 第 ${page.pageNumber} 頁：${page.title}。自學時先讀本頁目的，再完成 checkpoint。`).join("\n");
+  const takeaways = pageScripts.slice(0, 8).map((page) => `- 第 ${page.pageNumber} 頁：${page.title}。自學時先讀本頁目的，再用一句話整理本頁核心判斷。`).join("\n");
+  const checkpointPages = pageScripts.filter((page) => clean(page.checkpoint)).map((page) => `第 ${page.pageNumber} 頁`).join("、") || "本輪未設定";
   const technicalCue = context.scriptPages.some((page) => ["demo", "troubleshooting", "assessment"].includes(page.pageType))
     ? "\n\n### 技術課自學提醒\n- Demo 頁：記錄操作流程、預期輸出和 fallback。\n- Troubleshooting 頁：把錯誤現象對應到第一個 command 或 evidence。\n- 驗收頁：提交可觀察、可重做、可截圖或可用 command 證明的 evidence。"
     : "";
   return [
     "### 自學閱讀路線",
-    "這份補充講義給學生課後自學使用，不取代教師逐頁口語講稿。閱讀時不要只看投影片文字，請把每頁都轉成一個「我能不能證明自己理解」的問題。",
+    "這份補充講義給學生課後自學使用，不取代教師逐頁口語講稿。閱讀時不要只看投影片文字，請把每頁都轉成一個「我能不能用自己的話說明」的判斷。",
     "",
-    takeaways || `- 先重讀「${context.inputs.topic}」的核心概念，再完成每頁 checkpoint。`,
+    takeaways || `- 先重讀「${context.inputs.topic}」的核心概念，再完成重點頁 checkpoint。`,
+    "",
+    `### 重點互動頁\n${checkpointPages}`,
     technicalCue,
     "",
     "### 課後自我檢查",
@@ -2685,12 +2734,13 @@ function buildScriptGenerationLog(aiScript, context) {
     `- PPT 頁數：${context.scriptPages.length}`,
     `- 起始頁：${context.startPage}`,
     `- 目標分鐘：${context.minutes}`,
-    `- 講稿規則：正式區只放逐頁教師口語稿；學生自學補充放第二區；Prompt / log 放第三區。`,
+    `- 核心講授分鐘：${formatNumber(context.budget.core)} 分；目標字數只計算教師口語核心講授。`,
+    `- 講稿規則：正式區只放逐頁教師口語稿；互動 checkpoint 只放重點頁，約每 ${CHECKPOINT_INTERVAL} 頁 1 次；學生自學補充放第二區；Prompt / log 放第三區。`,
     `- 來源標記：原教材內容 / 推定補充 / 需教師確認。`,
     notes.length ? `- AI 課前提醒：${notes.join("；")}` : "- AI 課前提醒：無",
     "",
     "### Prompt 摘要",
-    "系統要求每頁固定輸出：本頁教學目的、教師口語講稿、互動問題 / checkpoint、轉場語；Demo、Troubleshooting、驗收條件頁需加入對應實務元素。",
+    "系統要求每頁固定輸出：本頁教學目的、教師口語講稿、轉場語；互動問題 / checkpoint 只在重點頁輸出。Demo、Troubleshooting、驗收條件頁需加入對應實務元素。",
   ].join("\n");
 }
 
@@ -2699,8 +2749,8 @@ async function completeScriptToTarget() {
     await generateScript();
   }
   const context = getScriptTargetContext();
-  state.script = appendSelfStudyExpansionToFormalScript(state.script, context, "字數達標補充");
-  logAudit("講稿字數達標", `已補到 ${countWords(state.script)}/${context.targetWords} 字`);
+  state.script = appendCoreLectureExpansionToFormalScript(state.script, context, "核心講授字數補充");
+  logAudit("講稿字數達標", `核心講授已補到 ${countCoreLectureWords(state.script)}/${context.targetWords} 字`);
   renderScript();
   markDriveBackupNeeded("講稿字數達標");
   persistState();
@@ -2712,8 +2762,8 @@ function addCoreLectureDepth() {
     return;
   }
   const context = getScriptTargetContext();
-  state.script = appendSelfStudyExpansionToFormalScript(state.script, context, "核心講授補充");
-  logAudit("講稿補核心", `補充核心講授段落後共 ${countWords(state.script)} 字`);
+  state.script = appendCoreLectureExpansionToFormalScript(state.script, context, "核心講授補充");
+  logAudit("講稿補核心", `補充核心講授段落後共 ${countCoreLectureWords(state.script)} 字`);
   renderScript();
   markDriveBackupNeeded("講稿補核心");
   persistState();
@@ -2722,7 +2772,7 @@ function addCoreLectureDepth() {
 function getScriptTargetContext() {
   const inputs = state.lastLessonInputs || getLessonInputs();
   const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
-  const budget = calculateBudget(minutes);
+  const budget = calculateBudget(minutes, getConfiguredCoreMinutes(minutes));
   const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
   const material = clean(dom.materialText.value) || buildMaterialFromSlides();
@@ -2741,18 +2791,18 @@ function getScriptTargetContext() {
   };
 }
 
-function appendSelfStudyExpansionToFormalScript(script, context, label) {
+function appendCoreLectureExpansionToFormalScript(script, context, label) {
   const additions = [
     `### ${label}`,
     buildScriptTargetExpansionBlock(context, 0),
     "",
     buildWorkedExampleDepthBlock(context),
   ].join("\n\n");
+  if (script.includes("## 二、學生自學補充講義")) {
+    return script.replace("\n## 二、學生自學補充講義", `\n${additions}\n\n## 二、學生自學補充講義`);
+  }
   if (script.includes("## 三、生成紀錄 / Prompt")) {
     return script.replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
-  }
-  if (script.includes("## 二、學生自學補充講義")) {
-    return `${script}\n\n${additions}`;
   }
   return composeFormalLectureScript(null, context).replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
 }
@@ -2760,16 +2810,16 @@ function appendSelfStudyExpansionToFormalScript(script, context, label) {
 function renderScriptGoal() {
   if (!dom.scriptGoalStatus) return;
   const context = getScriptTargetContext();
-  const words = countWords(state.script);
+  const words = countCoreLectureWords(state.script);
   const percent = context.targetWords ? Math.min(100, Math.round((words / context.targetWords) * 100)) : 0;
   const gap = Math.max(0, context.targetWords - words);
   const status = words >= context.targetWords
-    ? "正式口語稿已生成；字數主要用來估算學生自學補充量。"
-    : `正式口語稿以逐頁 120-180 字為準；尚差約 ${gap} 字只會補到學生自學講義，不會塞進正式講稿。`;
+    ? "核心講授字數已達標；學生自學補充與生成紀錄不會計入。"
+    : `目前只計算教師核心講授，不計學生自學補充與生成紀錄；尚差約 ${gap} 字。`;
   dom.scriptGoalStatus.innerHTML = `
     <div class="target-meter-row">
       <div>
-        <span>講稿字數達標器</span>
+        <span>核心講授字數達標器</span>
         <strong>${escapeHtml(words)} / ${escapeHtml(context.targetWords)} 字</strong>
       </div>
       <span>${escapeHtml(percent)}%</span>
@@ -2783,7 +2833,7 @@ function buildScriptTargetExpansionBlock(context, index) {
   const fragments = context.fragments.length ? context.fragments : textToPages(context.focusedMaterial).map((page) => page.text).slice(0, 4);
   const source = fragments[index % Math.max(fragments.length, 1)] || context.inputs.context || context.inputs.objective || context.inputs.topic;
   const evidenceCue = inferScriptEvidenceCue(context.inputs);
-  return `【核心講授補足 ${index + 1}｜可直接給學生自學】\n
+  return `【核心講授補足 ${index + 1}｜教師可直接講授】\n
 這一段用來把「${context.inputs.topic}」講得更完整。請先記住一個原則：學生不是只需要知道名詞，而是需要知道名詞背後的判斷方法。當你看到教材或投影片出現一個概念時，請先問三件事。第一，這個概念解決什麼問題？第二，它依賴哪些先備條件？第三，如果結果不符合預期，我可以用什麼 evidence 證明問題在哪一層？\n
 本段素材重點是：${String(source).replace(/\s+/g, " ").slice(0, 520)}\n
 以技術課堂來說，最有價值的學習不是把指令背下來，而是能把「情境、操作、證據、解釋」串成一條線。例如學生做完一個 Kubernetes 任務後，不應只提交截圖，而要說明使用了哪個 YAML、哪個 kubectl 指令、看到什麼 output、這個 output 如何證明任務完成。這樣的寫法可以直接服務 CA Lab、CKA/CKAD 練習和期末 Skill Test。\n
@@ -2940,23 +2990,33 @@ function renderScript() {
 
 function renderTimeBudget() {
   const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
-  const budget = state.budget && Number(state.budget.total) === minutes ? state.budget : calculateBudget(minutes);
-  const wpm = state.budget && Number(state.budget.total) === minutes ? state.budget.wpm : calculateWpm();
+  syncDefaultCoreMinutes();
+  const coreMinutes = getConfiguredCoreMinutes(minutes);
+  if (dom.coreMinutes && Number(dom.coreMinutes.value) !== coreMinutes) {
+    dom.coreMinutes.value = formatNumber(coreMinutes);
+  }
+  const budget = state.budget && Number(state.budget.total) === minutes && Number(state.budget.core) === coreMinutes
+    ? state.budget
+    : calculateBudget(minutes, coreMinutes);
+  const wpm = calculateWpm();
   const targetWords = Math.round(budget.core * wpm);
 
   dom.timeBudget.innerHTML = [
-    ["開場", budget.opening, 10],
-    ["核心講授", budget.core, 65],
-    ["問答反思", budget.qa, 20],
-    ["切換緩衝", budget.buffer, 5],
+    ["開場", budget.opening],
+    ["核心講授", budget.core],
+    ["問答反思", budget.qa],
+    ["切換緩衝", budget.buffer],
   ]
     .map(
-      ([label, value, percent]) => `
+      ([label, value]) => {
+        const percent = minutes ? Math.max(0, Math.min(100, Math.round((value / minutes) * 100))) : 0;
+        return `
         <div class="budget-row">
           <div class="budget-label"><span>${label}</span><strong>${formatNumber(value)} 分</strong></div>
           <div class="budget-bar"><span style="width:${percent}%"></span></div>
         </div>
-      `,
+      `;
+      },
     )
     .join("");
 
@@ -3300,7 +3360,7 @@ function renderVersions() {
         return `
         <article class="version-item">
           <strong>${escapeHtml(version.name)}</strong>
-          <span>${stats.slideCount} 頁教材 · ${stats.scriptWords} 字講稿 · ${stats.generatedLabs}/${stats.labCount} Lab · ${stats.generatedAssessments}/${stats.assessmentCount} 評核</span>
+          <span>${stats.slideCount} 頁教材 · ${stats.scriptWords} 字核心講授 · ${stats.generatedLabs}/${stats.labCount} Lab · ${stats.generatedAssessments}/${stats.assessmentCount} 評核</span>
           <div class="version-actions">
             <button type="button" data-restore-version="${index}">還原</button>
             <button type="button" data-compare-version="${index}">比較</button>
@@ -3421,7 +3481,7 @@ function compareVersion(index) {
     </div>
     <div class="compare-metrics">
       ${compareMetric("PPT 頁數", current.stats.slideCount, previous.stats.slideCount)}
-      ${compareMetric("講稿字數", current.stats.scriptWords, previous.stats.scriptWords)}
+      ${compareMetric("核心講授字數", current.stats.scriptWords, previous.stats.scriptWords)}
       ${compareMetric("已生成 Lab", current.stats.generatedLabs, previous.stats.generatedLabs)}
       ${compareMetric("Assessment 內容", current.stats.generatedAssessments, previous.stats.generatedAssessments)}
     </div>
@@ -3442,7 +3502,7 @@ function getVersionStats(version) {
   const assessments = Array.isArray(annualPlan.assessments) ? annualPlan.assessments : [];
   return {
     slideCount: version?.slides?.length || 0,
-    scriptWords: countWords(version?.script || ""),
+    scriptWords: countCoreLectureWords(version?.script || ""),
     labCount: labs.length,
     generatedLabs: labs.filter((lab) => lab.generatedContent).length,
     assessmentCount: assessments.length,
@@ -3483,7 +3543,7 @@ function countChangedSlides(currentSlides, previousSlides) {
 
 function buildVersionRiskNotes(current, previous, changedSlides) {
   const notes = [];
-  if (current.stats.scriptWords < previous.stats.scriptWords) notes.push("目前講稿較舊版本短，請確認是否仍達到目標字數。");
+  if (current.stats.scriptWords < previous.stats.scriptWords) notes.push("目前核心講授字數較舊版本短，請確認是否仍達到目標字數。");
   if (current.stats.generatedLabs < previous.stats.generatedLabs) notes.push("目前已生成 Lab 數量較少，可能漏了部分 Lab brief / rubric。");
   if (current.stats.generatedAssessments < previous.stats.generatedAssessments) notes.push("目前 Assessment 題庫或 rubric 較舊版本少。");
   if (changedSlides > 0) notes.push(`${changedSlides} 頁 PPT 標題相同但 prompt / notes 已改，建議抽查品質。`);
@@ -4295,6 +4355,7 @@ function clearProject() {
   state.role = "teacher";
   state.lastLessonInputs = null;
   state.budget = null;
+  syncDefaultCoreMinutes(true);
   generateLesson();
 }
 
@@ -4312,6 +4373,7 @@ async function loadDemoProject() {
   await generateLesson();
   dom.startPage.value = "4";
   dom.scriptMinutes.value = "18";
+  syncDefaultCoreMinutes(true);
   await generateScript();
   saveVersion();
 }
@@ -4319,7 +4381,7 @@ async function loadDemoProject() {
 function renderStatus() {
   dom.slideCount.textContent = String(state.slides.length);
   dom.durationStatus.textContent = String((state.lastLessonInputs || getLessonInputs()).duration);
-  dom.scriptWordStatus.textContent = String(countWords(state.script));
+  dom.scriptWordStatus.textContent = String(countCoreLectureWords(state.script));
   dom.versionStatus.textContent = String(state.versions.length);
   dom.publishStatus.textContent = state.publishedRevision ? "已發布" : "草稿";
   dom.groundedRateStatus.textContent = `${getGovernanceMetrics().groundedRate}%`;
@@ -4734,14 +4796,38 @@ function firstClientLine(text) {
     ?.slice(0, 80) || "";
 }
 
-function calculateBudget(total) {
+function calculateBudget(total, coreOverride = null) {
+  const core = getValidCoreMinutes(total, coreOverride);
+  const remaining = Math.max(0, total - core);
   return {
     total,
-    opening: total * 0.1,
-    core: total * 0.65,
-    qa: total * 0.2,
-    buffer: total * 0.05,
+    opening: remaining * 0.4,
+    core,
+    qa: remaining * 0.4,
+    buffer: remaining * 0.2,
+    coreRatio: total ? core / total : DEFAULT_CORE_RATIO,
   };
+}
+
+function getConfiguredCoreMinutes(total) {
+  return getValidCoreMinutes(total, dom.coreMinutes?.value);
+}
+
+function getValidCoreMinutes(total, value) {
+  const fallback = roundOne(total * DEFAULT_CORE_RATIO);
+  const number = Number(value);
+  const core = Number.isFinite(number) && number > 0 ? number : fallback;
+  return roundOne(clamp(core, 1, Math.max(1, total)));
+}
+
+function syncDefaultCoreMinutes(force = false) {
+  if (!dom.coreMinutes || !dom.scriptMinutes) return;
+  const total = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
+  const defaultCore = roundOne(total * DEFAULT_CORE_RATIO);
+  if (force || !dom.coreMinutes.value || dom.coreMinutes.dataset.autoCore !== "false") {
+    dom.coreMinutes.value = formatNumber(defaultCore);
+    dom.coreMinutes.dataset.autoCore = "true";
+  }
 }
 
 function calculateWpm() {
@@ -5022,6 +5108,41 @@ function countWords(text) {
     .replace(/[\u3400-\u9fff]/g, " ")
     .match(/[A-Za-z0-9]+/g)?.length || 0;
   return cjk + words;
+}
+
+function countCoreLectureWords(script) {
+  const text = String(script || "");
+  if (!text.trim()) return 0;
+  const teacherSection = extractBetween(text, "## 一、教師口語講稿", "## 二、學生自學補充講義")
+    || extractBetween(text, "# 教師口語講稿", "# 講稿品質檢查")
+    || text;
+  const spokenBlocks = Array.from(teacherSection.matchAll(/####\s*教師口語講稿\s*\n([\s\S]*?)(?=\n####\s|\n###\s*第|\n##\s|$)/g))
+    .map((match) => match[1]);
+  const coreExpansion = Array.from(teacherSection.matchAll(/###\s*核心講授[^\n]*\n([\s\S]*?)(?=\n###\s|##\s|$)/g))
+    .map((match) => match[1]);
+  const source = spokenBlocks.length || coreExpansion.length
+    ? [...spokenBlocks, ...coreExpansion].join("\n")
+    : teacherSection;
+  const coreOnly = source
+    .split(/\r?\n/)
+    .filter((line) => {
+      const value = line.trim();
+      if (!value) return false;
+      if (/^#{1,6}\s*/.test(value)) return false;
+      if (/^[-*]\s*內容來源標記[:：]/u.test(value)) return false;
+      if (/^(來源|內容來源標記)[:：]/u.test(value)) return false;
+      return true;
+    })
+    .join("\n");
+  return countWords(coreOnly);
+}
+
+function extractBetween(text, startMarker, endMarker) {
+  const start = text.indexOf(startMarker);
+  if (start === -1) return "";
+  const afterStart = start + startMarker.length;
+  const end = text.indexOf(endMarker, afterStart);
+  return text.slice(afterStart, end === -1 ? undefined : end);
 }
 
 function clean(value) {

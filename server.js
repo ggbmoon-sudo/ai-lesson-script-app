@@ -94,7 +94,7 @@ const scriptSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["pageNumber", "title", "sourceTags", "teachingPurpose", "spokenScript", "checkpoint", "transition"],
+        required: ["pageNumber", "title", "sourceTags", "teachingPurpose", "spokenScript", "transition"],
         properties: {
           pageNumber: { type: "number" },
           title: { type: "string" },
@@ -1256,14 +1256,15 @@ ${teacherInterview || inputs.interviewAnswers || "尚未提供"}
 硬性要求：
 1. 每一頁 PPT 都必須生成講稿，不可只挑部分頁面；teacherScriptPages 長度必須等於 slide_json 長度。
 2. 完全對齊 PPT 頁序與頁數，不要新增不存在的投影片，不要省略任何一頁。
-3. 每頁固定輸出：teachingPurpose、spokenScript、checkpoint、transition。
-4. spokenScript 要像老師真的會講的話，不要只是複製投影片文字。每頁約 120-180 字，Demo / Troubleshooting 頁可較長。
+3. 每頁固定輸出：teachingPurpose、spokenScript、transition。checkpoint 只在重點頁輸出；非重點頁請留空字串或省略。
+4. spokenScript 要像老師真的會講的話，不要只是複製投影片文字。每頁約 120-180 字，Demo / Troubleshooting 頁可較長；總字數只以核心講授分鐘估算。
 5. sourceTags 只能使用「原教材內容」「推定補充」「需教師確認」三種文字；來自 PPT 用「原教材內容」；AI 合理延伸用「推定補充」；需要老師確認用「需教師確認」。
 6. 禁止輸出內部 prompt、PPT Slide Compiler Prompt、debug log、版本紀錄、講者備註：1/2/3 這類解析殘留。
 7. Demo 頁必須包含操作流程、預期輸出、驗收條件、失敗 fallback。
 8. Troubleshooting 頁必須把錯誤現象對應到第一個要查的 command 或 evidence。
-9. generationLog 最後必須做自我檢查：是否每頁都有講稿、是否漏頁、是否有重複模板句、是否有 prompt/debug log 殘留、哪些內容屬推定補充、哪些內容需教師確認。
-10. script 欄位請輸出 Markdown，格式為：
+9. 互動問題 / checkpoint 只選重點頁，約每 5 頁 1 次；優先給 Demo、Troubleshooting、Assessment 或概念轉折頁，不要每頁硬塞問題。
+10. generationLog 最後必須做自我檢查：是否每頁都有講稿、是否漏頁、checkpoint 是否只在重點頁、是否有重複模板句、是否有 prompt/debug log 殘留、哪些內容屬推定補充、哪些內容需教師確認。
+11. script 欄位請輸出 Markdown，格式為：
 # 教師口語講稿
 ## 第 1 頁：{slide_title}
 來源：原教材內容 / 推定補充 / 需教師確認
@@ -1271,7 +1272,7 @@ ${teacherInterview || inputs.interviewAnswers || "尚未提供"}
 ...
 ### 教師口語講稿
 ...
-### 互動問題 / Checkpoint
+### 互動問題 / Checkpoint（只在重點頁輸出）
 ...
 ### 轉場語
 ...
@@ -1315,6 +1316,7 @@ function buildCourseJsonForScriptPrompt({ inputs, minutes, budget, wpm }) {
     prerequisites: inputs.context,
     teacher_interview_answers: inputs.interviewAnswers || "",
     suggested_wpm: wpm,
+    checkpoint_policy: "只在重點頁加入互動問題，約每 5 頁 1 次，不要每頁都輸出 checkpoint。",
   };
 }
 
