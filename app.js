@@ -304,7 +304,7 @@ const state = {
     enabled: false,
     provider: "",
     model: "",
-    message: "本機規則",
+    message: "Gemini 未檢查",
     busy: false,
     lastCheckedAt: null,
   },
@@ -319,7 +319,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAppConfig();
   restoreState();
   await checkAiHealth();
-  if (!state.slides.length) {
+  if (!state.slides.length && state.ai.enabled && state.ai.provider === "gemini") {
     await generateLesson();
   }
   renderAll();
@@ -573,9 +573,9 @@ async function checkAiHealth() {
     state.ai = {
       checked: true,
       enabled: false,
-      provider: "local",
+      provider: "",
       model: "",
-      message: "本機規則",
+      message: "Gemini 未連線",
       busy: false,
       lastCheckedAt: new Date().toISOString(),
     };
@@ -593,7 +593,7 @@ async function checkAiHealth() {
       model: data.model || "",
       geminiModelTier: data.geminiModelTier || null,
       geminiGeneration: data.geminiGeneration || null,
-      message: data.aiEnabled ? `${formatAiProviderName(data.provider)} 已連線` : "本機規則",
+      message: data.aiEnabled && data.provider === "gemini" ? "Gemini 已連線" : "Gemini 未設定",
       busy: false,
       lastCheckedAt: new Date().toISOString(),
     };
@@ -601,7 +601,7 @@ async function checkAiHealth() {
     state.ai = {
       checked: true,
       enabled: false,
-      provider: "local",
+      provider: "",
       model: "",
       message: "伺服器未連線",
       busy: false,
@@ -642,8 +642,16 @@ async function loadAppConfig() {
 }
 
 async function requestAi(type, payload) {
-  if (!state.ai.enabled || window.location.protocol === "file:") {
-    return null;
+  if (window.location.protocol === "file:") {
+    throw new Error("Gemini AI 生成需要以 node server.js 啟動後使用 http://localhost:4173。");
+  }
+
+  if (!state.ai.checked) {
+    await checkAiHealth();
+  }
+
+  if (!state.ai.enabled || state.ai.provider !== "gemini") {
+    throw new Error("所有生成位置已設定為必須使用 Gemini AI。請在 .env 設定 AI_PROVIDER=gemini 與 GEMINI_API_KEY，然後重新啟動 server。");
   }
 
   const response = await fetch(`/api/ai/${type}`, {
@@ -697,14 +705,25 @@ function getAnnualInputs() {
   };
 }
 
-function generateAnnualPlan() {
+async function generateAnnualPlan() {
   const inputs = getAnnualInputs();
-  state.annualPlan = buildAnnualPlan(inputs);
-  state.assessmentBank = null;
-  logAudit("年度規劃", `${inputs.moduleTitle} 已生成全年 Lecture / Lab / Assessment 藍圖`);
-  renderAnnualPlan();
-  markDriveBackupNeeded("年度規劃");
-  persistState();
+  const seedPlan = buildAnnualPlan(inputs);
+  setAiBusy(true, "Gemini 生成全年規劃中");
+  try {
+    const aiPlan = await requestAi("annual-plan", { inputs, seedPlan });
+    state.annualPlan = mergeAnnualAiPlan(seedPlan, aiPlan);
+    state.assessmentBank = null;
+    logAudit("年度規劃", `Gemini 生成 ${inputs.moduleTitle} 全年 Lecture / Lab / Assessment 藍圖`);
+    renderAnnualPlan();
+    markDriveBackupNeeded("Gemini 年度規劃");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    dom.annualNote.textContent = `Gemini 年度規劃生成失敗：${error.message}`;
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 年度規劃生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
 function buildAnnualPlan(inputs) {
@@ -779,6 +798,78 @@ function buildAnnualPlan(inputs) {
       "若使用者貼入現有每週清單，系統會保留週次脈絡，再補齊 lecture metadata、PPT slide spec、Lab/Assessment rubric 與 QA gate。",
     ],
   };
+}
+
+function mergeAnnualAiPlan(seedPlan, aiPlan) {
+  const plan = structuredCloneSafe(seedPlan);
+  plan.aiGenerated = {
+    provider: "gemini",
+    generatedAt: new Date().toISOString(),
+    summary: aiPlan?.summary || "",
+  };
+
+  if (Array.isArray(aiPlan?.lectureUnits)) {
+    plan.lectureUnits = plan.lectureUnits.map((unit, index) => mergeLectureAiUnit(unit, aiPlan.lectureUnits[index], plan.inputs, index));
+  }
+
+  if (Array.isArray(aiPlan?.labs)) {
+    plan.labs = plan.labs.map((lab, index) => ({
+      ...lab,
+      ...(aiPlan.labs[index] || {}),
+      id: lab.id,
+      week: lab.week,
+    }));
+  }
+
+  if (Array.isArray(aiPlan?.assessments)) {
+    plan.assessments = plan.assessments.map((assessment, index) => ({
+      ...assessment,
+      ...(aiPlan.assessments[index] || {}),
+      type: assessment.type,
+      week: assessment.week,
+      hours: assessment.hours,
+    }));
+  }
+
+  if (Array.isArray(aiPlan?.pptConsolidation) && aiPlan.pptConsolidation.length) {
+    plan.pptConsolidation = aiPlan.pptConsolidation;
+  }
+  if (Array.isArray(aiPlan?.qaGates) && aiPlan.qaGates.length) {
+    plan.qaGates = aiPlan.qaGates.map((name, index) => ({
+      id: `QA-${String(index + 1).padStart(2, "0")}`,
+      name,
+      passRule: "Gemini generated gate + teacher review",
+      blocking: index < 2 ? "export" : "publish",
+    }));
+  }
+  if (Array.isArray(aiPlan?.accessibilityChecklist) && aiPlan.accessibilityChecklist.length) {
+    plan.accessibilityChecklist = aiPlan.accessibilityChecklist;
+  }
+  if (Array.isArray(aiPlan?.complianceNotes) && aiPlan.complianceNotes.length) {
+    plan.complianceNotes = aiPlan.complianceNotes;
+  }
+
+  recalculateAnnualMetrics(plan);
+  syncAnnualLectureTimetable(plan);
+  return plan;
+}
+
+function mergeLectureAiUnit(unit, aiUnit, inputs, index) {
+  if (!aiUnit) return unit;
+  const merged = {
+    ...unit,
+    title: clean(aiUnit.title) || unit.title,
+    subtopics: Array.isArray(aiUnit.subtopics) && aiUnit.subtopics.length ? aiUnit.subtopics.map(clean).filter(Boolean) : unit.subtopics,
+    outcomes: Array.isArray(aiUnit.outcomes) && aiUnit.outcomes.length ? aiUnit.outcomes : unit.outcomes,
+    pptFocus: Array.isArray(aiUnit.pptFocus) && aiUnit.pptFocus.length ? aiUnit.pptFocus : unit.pptFocus,
+    recordingCue: aiUnit.recordingCue || unit.recordingCue,
+    duplicateCleanup: aiUnit.duplicateCleanup || unit.duplicateCleanup,
+    slideSpec: Array.isArray(aiUnit.slideSpec) && aiUnit.slideSpec.length ? aiUnit.slideSpec : unit.slideSpec,
+    pptxChecklist: Array.isArray(aiUnit.pptxChecklist) && aiUnit.pptxChecklist.length ? aiUnit.pptxChecklist : unit.pptxChecklist,
+    qaChecklist: Array.isArray(aiUnit.qaChecklist) && aiUnit.qaChecklist.length ? aiUnit.qaChecklist : unit.qaChecklist,
+  };
+  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true });
+  return merged;
 }
 
 function buildLectureTopics(customTopics, count, weeklyLectures = []) {
@@ -958,7 +1049,7 @@ function calculateLectureSlideTarget(minutes, slidesPerHour) {
   return clamp(Math.round((Number(minutes) || 60) / 60 * (Number(slidesPerHour) || 12)), 6, 80);
 }
 
-function updateAnnualLectureFromCard(index) {
+async function updateAnnualLectureFromCard(index) {
   const plan = state.annualPlan;
   const unit = plan?.lectureUnits?.[index];
   if (!plan || !unit) return;
@@ -975,15 +1066,26 @@ function updateAnnualLectureFromCard(index) {
   unit.hours = roundOne(minutes / 60);
   unit.pptSlides = calculateLectureSlideTarget(minutes, plan.inputs.slidesPerHour);
   updateLectureDerivedFields(unit, plan.inputs, index);
+  setAiBusy(true, "Gemini 更新 Lecture/PPT 清單中");
+  try {
+    const aiUnit = await requestAi("lecture-pptx", { unit, inputs: plan.inputs });
+    Object.assign(unit, mergeLectureAiUnit(unit, aiUnit, plan.inputs, index));
+  } catch (error) {
+    console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini Lecture/PPT 清單更新失敗：${error.message}`;
+    setAiBusy(false);
+    return;
+  }
   recalculateAnnualMetrics(plan);
   syncAnnualLectureTimetable(plan);
-  logAudit("Lecture/PPT 編輯", `${unit.id} 已更新：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
+  logAudit("Lecture/PPT 編輯", `Gemini 更新 ${unit.id}：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
   renderAnnualPlan();
-  markDriveBackupNeeded("Lecture/PPT 清單編輯");
+  markDriveBackupNeeded("Gemini Lecture/PPT 清單編輯");
   persistState();
+  setAiBusy(false);
 }
 
-function updateLectureDerivedFields(unit, inputs, index) {
+function updateLectureDerivedFields(unit, inputs, index, options = {}) {
   const focus = inferLectureFocus(unit.title);
   const templateId = inferLectureTemplateId(unit.title, unit.pptSlides);
   const resourceProfile = inferResourceProfile(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.resourceConstraints);
@@ -1023,8 +1125,8 @@ function updateLectureDerivedFields(unit, inputs, index) {
     source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
     review_status: "draft",
   };
-  unit.slideSpec = buildLectureSlideSpec(unit.title, unit.pptSlides, unit.subtopics);
-  unit.pptxChecklist = buildPptxGenerationChecklist({
+  const localSlideSpec = buildLectureSlideSpec(unit.title, unit.pptSlides, unit.subtopics);
+  const localPptxChecklist = buildPptxGenerationChecklist({
     topic: unit.title,
     subtopics: unit.subtopics,
     slideTarget: unit.pptSlides,
@@ -1034,6 +1136,12 @@ function updateLectureDerivedFields(unit, inputs, index) {
     resourceProfile,
     officialAlignment,
   });
+  if (!options.preserveAiChecklist || !Array.isArray(unit.slideSpec) || !unit.slideSpec.length) {
+    unit.slideSpec = localSlideSpec;
+  }
+  if (!options.preserveAiChecklist || !Array.isArray(unit.pptxChecklist) || !unit.pptxChecklist.length) {
+    unit.pptxChecklist = localPptxChecklist;
+  }
   unit.qaChecklist = buildLectureQaChecklist();
 }
 
@@ -1487,6 +1595,7 @@ async function generateLesson() {
   state.interviewAnswers = inputs.interviewAnswers || "";
   state.lastLessonInputs = inputs;
   setAiBusy(true, "生成教材中");
+  let generated = false;
 
   try {
     const aiLesson = await requestAi("lesson", { inputs });
@@ -1494,16 +1603,22 @@ async function generateLesson() {
       state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
       logAudit("教材生成", `${formatAiProviderName(state.ai.provider)} 生成 ${state.slides.length} 頁教材草稿`);
+      generated = true;
     } else {
-      generateLessonLocal(inputs);
-      logAudit("教材生成", `本機規則生成 ${state.slides.length} 頁教材草稿`);
+      throw new Error("Gemini 未回傳有效 slides。");
     }
   } catch (error) {
     console.warn(error);
-    generateLessonLocal(inputs);
-    logAudit("教材生成", `AI 不可用，改用本機規則生成 ${state.slides.length} 頁教材草稿`);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 教材生成失敗：${error.message}`;
+    logAudit("教材生成", `Gemini 生成失敗：${error.message}`);
   } finally {
     setAiBusy(false);
+  }
+
+  if (!generated) {
+    renderStatus();
+    persistState();
+    return;
   }
 
   dom.duration.value = inputs.duration;
@@ -1514,12 +1629,6 @@ async function generateLesson() {
   renderAll();
   markDriveBackupNeeded("教材生成");
   persistState();
-}
-
-function generateLessonLocal(inputs) {
-  const deckPlan = buildPptDeckPlan(inputs);
-  state.questions = buildPptInterviewQuestions(inputs);
-  state.slides = deckPlan.map((plan, index) => buildSlideFromDeckPlan(plan, inputs, index));
 }
 
 function normalizeAiSlides(slides, inputs) {
@@ -2089,94 +2198,138 @@ function typeChipClass(type) {
   return "lecture";
 }
 
-function generateLabContent(index) {
+async function generateLabContent(index) {
   const plan = state.annualPlan;
   const lab = plan?.labs?.[index];
   if (!plan || !lab) return;
-  const markdown = buildLabContentMarkdown(lab, plan, index);
-  plan.generatedContent = {
-    title: `${lab.id}｜${lab.title}`,
-    markdown,
-    type: "lab",
-    index,
-    updatedAt: new Date().toISOString(),
-  };
-  lab.generatedContent = markdown;
-  logAudit("Lab 內容生成", `${lab.id} 已生成 instructions / steps / rubric`);
-  renderAnnualPlan();
-  markDriveBackupNeeded("Lab 內容生成");
-  persistState();
+  setAiBusy(true, "Gemini 生成 Lab 內容中");
+  try {
+    const result = await requestAi("lab-content", { lab, plan, index });
+    const markdown = result?.markdown;
+    if (!markdown) throw new Error("Gemini 未回傳 Lab markdown。");
+    plan.generatedContent = {
+      title: result.title || `${lab.id}｜${lab.title}`,
+      markdown,
+      type: "lab",
+      index,
+      updatedAt: new Date().toISOString(),
+    };
+    lab.generatedContent = markdown;
+    logAudit("Lab 內容生成", `Gemini 已生成 ${lab.id} instructions / steps / rubric`);
+    renderAnnualPlan();
+    markDriveBackupNeeded("Gemini Lab 內容生成");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    dom.annualContentOutput.value = `Gemini Lab 內容生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
-function generateAssessmentContent(index) {
+async function generateAssessmentContent(index) {
   const plan = state.annualPlan;
   const assessment = plan?.assessments?.[index];
   if (!plan || !assessment) return;
-  const markdown = buildAssessmentContentMarkdown(assessment, plan, index);
-  plan.generatedContent = {
-    title: `${assessment.type}｜${assessment.title}`,
-    markdown,
-    type: "assessment",
-    index,
-    updatedAt: new Date().toISOString(),
-  };
-  assessment.generatedContent = markdown;
-  logAudit("Assessment 內容生成", `${assessment.type} 已生成 assessment brief / rubric`);
-  renderAnnualPlan();
-  markDriveBackupNeeded("Assessment 內容生成");
-  persistState();
+  setAiBusy(true, "Gemini 生成 Assessment 內容中");
+  try {
+    const result = await requestAi("assessment-content", { assessment, plan, index });
+    const markdown = result?.markdown;
+    if (!markdown) throw new Error("Gemini 未回傳 Assessment markdown。");
+    plan.generatedContent = {
+      title: result.title || `${assessment.type}｜${assessment.title}`,
+      markdown,
+      type: "assessment",
+      index,
+      updatedAt: new Date().toISOString(),
+    };
+    assessment.generatedContent = markdown;
+    logAudit("Assessment 內容生成", `Gemini 已生成 ${assessment.type} assessment brief / rubric`);
+    renderAnnualPlan();
+    markDriveBackupNeeded("Gemini Assessment 內容生成");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    dom.annualContentOutput.value = `Gemini Assessment 內容生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
-function generateAllLabContent() {
-  if (!state.annualPlan) generateAnnualPlan();
+async function generateAllLabContent() {
+  if (!state.annualPlan) await generateAnnualPlan();
   const plan = state.annualPlan;
   if (!plan?.labs?.length) return;
-  const markdown = plan.labs
-    .map((lab, index) => {
-      const content = buildLabContentMarkdown(lab, plan, index);
-      lab.generatedContent = content;
-      return content;
-    })
-    .join("\n\n---\n\n");
-  plan.generatedContent = {
-    title: "全部 CA Lab Series｜完整學生版 + 教師版",
-    markdown,
-    type: "lab-batch",
-    index: null,
-    updatedAt: new Date().toISOString(),
-  };
-  logAudit("Lab 批量生成", `${plan.labs.length} 個 Lab 已生成完整 instructions / evidence / rubric`);
-  renderAnnualPlan();
-  markDriveBackupNeeded("Lab 批量生成");
-  persistState();
+  setAiBusy(true, "Gemini 批量生成全部 Lab 中");
+  try {
+    const results = [];
+    for (let index = 0; index < plan.labs.length; index += 1) {
+      const lab = plan.labs[index];
+      const result = await requestAi("lab-content", { lab, plan, index });
+      if (!result?.markdown) throw new Error(`${lab.id} 未回傳 markdown。`);
+      lab.generatedContent = result.markdown;
+      results.push(result.markdown);
+    }
+    const markdown = results.join("\n\n---\n\n");
+    plan.generatedContent = {
+      title: "全部 CA Lab Series｜Gemini 完整學生版 + 教師版",
+      markdown,
+      type: "lab-batch",
+      index: null,
+      updatedAt: new Date().toISOString(),
+    };
+    logAudit("Lab 批量生成", `Gemini 已生成 ${plan.labs.length} 個 Lab instructions / evidence / rubric`);
+    renderAnnualPlan();
+    markDriveBackupNeeded("Gemini Lab 批量生成");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    dom.annualContentOutput.value = `Gemini Lab 批量生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
-function generateAssessmentBank() {
-  if (!state.annualPlan) generateAnnualPlan();
+async function generateAssessmentBank() {
+  if (!state.annualPlan) await generateAnnualPlan();
   const plan = state.annualPlan;
   if (!plan?.assessments?.length) return;
-  const markdown = buildAssessmentBankMarkdown(plan);
-  state.assessmentBank = {
-    id: cryptoId(),
-    title: `${plan.inputs.moduleTitle}｜Assessment 題庫與 Rubric`,
-    markdown,
-    generatedAt: new Date().toISOString(),
-  };
-  plan.assessmentBank = structuredCloneSafe(state.assessmentBank);
-  plan.assessments.forEach((assessment, index) => {
-    assessment.generatedContent = buildAssessmentContentMarkdown(assessment, plan, index);
-  });
-  plan.generatedContent = {
-    title: "Assessment 題庫與 Rubric｜CA / EA",
-    markdown,
-    type: "assessment-bank",
-    index: null,
-    updatedAt: new Date().toISOString(),
-  };
-  logAudit("Assessment 題庫", `${plan.assessments.length} 個評核項已生成題庫、答案鍵與 Rubric`);
-  renderAnnualPlan();
-  markDriveBackupNeeded("Assessment 題庫生成");
-  persistState();
+  setAiBusy(true, "Gemini 生成 Assessment 題庫中");
+  try {
+    const result = await requestAi("assessment-bank", { plan });
+    const markdown = result?.markdown;
+    if (!markdown) throw new Error("Gemini 未回傳 Assessment bank markdown。");
+    state.assessmentBank = {
+      id: cryptoId(),
+      title: result.title || `${plan.inputs.moduleTitle}｜Assessment 題庫與 Rubric`,
+      markdown,
+      generatedAt: new Date().toISOString(),
+    };
+    plan.assessmentBank = structuredCloneSafe(state.assessmentBank);
+    if (Array.isArray(result.assessmentContents)) {
+      result.assessmentContents.forEach((item, index) => {
+        if (plan.assessments[index] && item?.markdown) {
+          plan.assessments[index].generatedContent = item.markdown;
+        }
+      });
+    }
+    plan.generatedContent = {
+      title: state.assessmentBank.title,
+      markdown,
+      type: "assessment-bank",
+      index: null,
+      updatedAt: new Date().toISOString(),
+    };
+    logAudit("Assessment 題庫", `Gemini 已生成 ${plan.assessments.length} 個評核項題庫、答案鍵與 Rubric`);
+    renderAnnualPlan();
+    markDriveBackupNeeded("Gemini Assessment 題庫生成");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    dom.annualContentOutput.value = `Gemini Assessment 題庫生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
 async function copyAnnualGeneratedContent() {
@@ -2783,38 +2936,33 @@ function renderSlides() {
   dom.slideSelect.onchange = renderSlides;
 }
 
-function regenerateSelectedSlide() {
+async function regenerateSelectedSlide() {
   if (!state.slides.length) return;
   const index = Number(dom.slideSelect.value || 0);
   const slide = state.slides[index];
   const feedback = clean(dom.slideFeedback.value) || "請讓內容更清楚、更適合學生理解";
-  const additions = [];
-
-  if (feedback.includes("生活") || feedback.includes("例")) {
-    additions.push(`生活化例子：把「${state.lastLessonInputs.topic}」連到學生每天會遇到的情境，再請學生指出其中的關鍵變因。`);
+  setAiBusy(true, "Gemini 重生成投影片中");
+  try {
+    const revised = await requestAi("slide-revision", { slide, feedback, inputs: state.lastLessonInputs || getLessonInputs() });
+    slide.title = revised.title || slide.title;
+    slide.activity = revised.activity || feedback;
+    slide.notes = revised.notes || slide.notes;
+    slide.speakerNotes = revised.speakerNotes || slide.speakerNotes;
+    slide.suggestedLayout = revised.suggestedLayout || slide.suggestedLayout;
+    slide.suggestedVisual = revised.suggestedVisual || slide.suggestedVisual;
+    slide.factCheckPoints = Array.isArray(revised.factCheckPoints) ? revised.factCheckPoints : slide.factCheckPoints;
+    logAudit("局部修改", `Gemini 已依教師意見更新第 ${slide.number} 頁：${feedback}`);
+    dom.slideFeedback.value = "";
+    dom.assistantContext.value = buildAssistantContext();
+    renderSlides();
+    markDriveBackupNeeded("Gemini 局部修改");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 投影片重生成失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
   }
-  if (feedback.includes("互動") || feedback.includes("問")) {
-    additions.push("互動提問：請學生先個人想 30 秒，再與旁邊同學交換答案，最後用一句話回報。");
-  }
-  if (feedback.includes("考") || feedback.includes("試")) {
-    additions.push("考試提示：把這頁概念轉成一題短答題，並標示得分關鍵詞。");
-  }
-  if (feedback.includes("短") || feedback.includes("精簡")) {
-    slide.notes = slide.notes
-      .split("\n")
-      .filter((line) => line.trim())
-      .slice(0, 4)
-      .join("\n");
-  }
-
-  slide.notes = updatePptPromptWithFeedback(slide, feedback, additions);
-  slide.activity = feedback;
-  logAudit("局部修改", `第 ${slide.number} 頁依教師意見更新：${feedback}`);
-  dom.slideFeedback.value = "";
-  dom.assistantContext.value = buildAssistantContext();
-  renderSlides();
-  markDriveBackupNeeded("局部修改");
-  persistState();
 }
 
 async function handleMaterialUpload(event) {
@@ -2916,43 +3064,37 @@ async function generateScript() {
     }
   } catch (error) {
     console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 講稿生成失敗：${error.message}`;
+    logAudit("講稿生成", `Gemini 生成失敗：${error.message}`);
   } finally {
     setAiBusy(false);
   }
-
-  state.script = composeFormalLectureScript(null, {
-    inputs,
-    scriptPages,
-    fragments: scriptPages.map((page) => `第 ${page.number} 頁：${page.title}\n${page.text}`),
-    focusedMaterial,
-    startPage,
-    minutes,
-    budget,
-    wpm,
-    targetWords,
-  });
-
-  logAudit("講稿生成", `本機規則依 ${scriptPages.length} 頁 PPT 生成逐頁教師口語稿（核心講授 ${countCoreLectureWords(state.script)} 字）`);
-  renderScript();
-  renderTimeBudget();
-  markDriveBackupNeeded("講稿生成");
-  persistState();
 }
 
-function reviseScript(mode) {
+async function reviseScript(mode) {
   if (!state.script) {
-    generateScript();
+    await generateScript();
     return;
   }
-  if (mode === "shorten") {
-    const paragraphs = state.script.split("\n").filter((line) => line.trim());
-    state.script = paragraphs.filter((_, index) => index % 3 !== 2).join("\n");
-  } else {
-    state.script = `${state.script}\n\n【補充層次】\n如果學生反應良好，可以加入一個延伸問題：請比較本課概念在理想條件與真實環境中的差異，並說明哪一個限制最容易影響結論。`;
+  setAiBusy(true, "Gemini 修訂講稿中");
+  try {
+    const result = await requestAi("script-revision", {
+      script: state.script,
+      context: getScriptTargetContext(),
+      mode,
+    });
+    if (!result?.script) throw new Error("Gemini 未回傳修訂講稿。");
+    state.script = result.script;
+    logAudit("講稿修訂", `Gemini 已${mode === "shorten" ? "精簡" : "擴寫"}講稿`);
+    renderScript();
+    markDriveBackupNeeded("Gemini 講稿修訂");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 講稿修訂失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
   }
-  renderScript();
-  markDriveBackupNeeded("講稿修訂");
-  persistState();
 }
 
 function getScriptPagesForLecture(material, startPage, inputs) {
@@ -3425,7 +3567,7 @@ function buildStudentSelfStudyHandout(context, pageScripts) {
 }
 
 function buildScriptGenerationLog(aiScript, context) {
-  const mode = aiScript ? `${formatAiProviderName(state.ai.provider)} structured output` : "local fallback";
+  const mode = aiScript ? `${formatAiProviderName(state.ai.provider)} structured output` : "Gemini unavailable";
   const notes = Array.isArray(aiScript?.teachingNotes) ? aiScript.teachingNotes : [];
   return [
     `- 生成模式：${mode}`,
@@ -3447,24 +3589,44 @@ async function completeScriptToTarget() {
     await generateScript();
   }
   const context = getScriptTargetContext();
-  state.script = appendCoreLectureExpansionToFormalScript(state.script, context, "核心講授字數補充");
-  logAudit("講稿字數達標", `核心講授已補到 ${countCoreLectureWords(state.script)}/${context.targetWords} 字`);
-  renderScript();
-  markDriveBackupNeeded("講稿字數達標");
-  persistState();
+  setAiBusy(true, "Gemini 補足講稿字數中");
+  try {
+    const result = await requestAi("script-revision", { script: state.script, context, mode: "complete_to_target_words" });
+    if (!result?.script) throw new Error("Gemini 未回傳補足講稿。");
+    state.script = result.script;
+    logAudit("講稿字數達標", `Gemini 已補到 ${countCoreLectureWords(state.script)}/${context.targetWords} 字`);
+    renderScript();
+    markDriveBackupNeeded("Gemini 講稿字數達標");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 補足講稿失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
-function addCoreLectureDepth() {
+async function addCoreLectureDepth() {
   if (!state.script) {
-    generateScript();
+    await generateScript();
     return;
   }
   const context = getScriptTargetContext();
-  state.script = appendCoreLectureExpansionToFormalScript(state.script, context, "核心講授補充");
-  logAudit("講稿補核心", `補充核心講授段落後共 ${countCoreLectureWords(state.script)} 字`);
-  renderScript();
-  markDriveBackupNeeded("講稿補核心");
-  persistState();
+  setAiBusy(true, "Gemini 補強核心講授中");
+  try {
+    const result = await requestAi("script-revision", { script: state.script, context, mode: "add_core_lecture_depth" });
+    if (!result?.script) throw new Error("Gemini 未回傳核心補強講稿。");
+    state.script = result.script;
+    logAudit("講稿補核心", `Gemini 補強後共 ${countCoreLectureWords(state.script)} 字`);
+    renderScript();
+    markDriveBackupNeeded("Gemini 講稿補核心");
+    persistState();
+  } catch (error) {
+    console.warn(error);
+    if (dom.compareBox) dom.compareBox.textContent = `Gemini 補強核心講授失敗：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
 }
 
 function getScriptTargetContext() {
@@ -3487,22 +3649,6 @@ function getScriptTargetContext() {
     wpm,
     targetWords,
   };
-}
-
-function appendCoreLectureExpansionToFormalScript(script, context, label) {
-  const additions = [
-    `### ${label}`,
-    buildScriptTargetExpansionBlock(context, 0),
-    "",
-    buildWorkedExampleDepthBlock(context),
-  ].join("\n\n");
-  if (script.includes("## 二、學生自學補充講義")) {
-    return script.replace("\n## 二、學生自學補充講義", `\n${additions}\n\n## 二、學生自學補充講義`);
-  }
-  if (script.includes("## 三、生成紀錄 / Prompt")) {
-    return script.replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
-  }
-  return composeFormalLectureScript(null, context).replace("\n## 三、生成紀錄 / Prompt", `\n${additions}\n\n## 三、生成紀錄 / Prompt`);
 }
 
 function renderScriptGoal() {
@@ -3743,13 +3889,12 @@ async function sendAssistantMessage() {
       state.messages.push({ role: "assistant", text: `${aiReply.answer}${checks}${nextMove}` });
       logAudit("即時助理", `${formatAiProviderName(state.ai.provider)} 生成課堂回應`);
     } else {
-      state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
-      logAudit("即時助理", "本機規則生成課堂回應");
+      throw new Error("Gemini 未回傳有效課堂回應。");
     }
   } catch (error) {
     console.warn(error);
-    state.messages.push({ role: "assistant", text: buildAssistantResponse(question, context) });
-    logAudit("即時助理", "AI 不可用，改用本機規則生成課堂回應");
+    state.messages.push({ role: "assistant", text: `Gemini 回應生成失敗：${error.message}` });
+    logAudit("即時助理", `Gemini 生成失敗：${error.message}`);
   } finally {
     setAiBusy(false);
   }
@@ -3818,7 +3963,7 @@ function renderStudentSources(sources) {
     .join("");
 }
 
-function askPublishedLesson() {
+async function askPublishedLesson() {
   const question = clean(dom.studentQuestion.value);
   if (!question) return;
 
@@ -3835,17 +3980,54 @@ function askPublishedLesson() {
 
   const sources = retrievePublishedSources(question, state.publishedRevision);
   const supported = sources.length && sources[0].score >= 3.5;
-  state.studentQa = {
-    question,
-    mode: supported ? "教材有據" : "尚未在教材找到",
-    answer: supported ? buildGroundedStudentAnswer(question, sources) : "已發布教材中未找到足夠依據回答這個問題。請改問與目前教材更直接相關的問題，或請老師補充。",
-    sources: supported ? sources.slice(0, 4) : [],
-  };
-  updateQaMetrics(supported);
-  logAudit("學生問答", `${state.studentQa.mode}：${question.slice(0, 80)}`);
-  renderPublishedQa();
-  renderGovernanceMetrics();
-  persistState();
+  const citationSources = sources.slice(0, 4).map((source) => ({
+    id: source.id,
+    type: source.type,
+    label: source.label,
+    preview: source.preview,
+    confidence: source.confidence,
+    sourceHash: source.sourceHash,
+    text: String(source.text || "").slice(0, 1600),
+  }));
+
+  setAiBusy(true, "Gemini 生成學生問答中");
+  try {
+    const result = await requestAi("student-qa", {
+      question,
+      supported,
+      sources: citationSources,
+      revisionMeta: {
+        topic: state.publishedRevision.inputs?.topic || "",
+        level: state.publishedRevision.inputs?.level || "",
+        publishedAt: state.publishedRevision.publishedAt,
+        slideCount: state.publishedRevision.slides?.length || 0,
+      },
+    });
+    state.studentQa = {
+      question,
+      mode: supported ? "Gemini 教材有據" : "Gemini 拒答 / 需老師補充",
+      answer: [result.answer, result.nextMove ? `下一步：${result.nextMove}` : "", ...(result.checks || []).map((item) => `檢查：${item}`)]
+        .filter(Boolean)
+        .join("\n"),
+      sources: supported ? citationSources : [],
+    };
+    updateQaMetrics(supported);
+    logAudit("學生問答", `${state.studentQa.mode}：${question.slice(0, 80)}`);
+    renderPublishedQa();
+    renderGovernanceMetrics();
+    persistState();
+  } catch (error) {
+    state.studentQa = {
+      question,
+      mode: "Gemini 生成失敗",
+      answer: `Gemini 學生問答生成失敗：${error.message}`,
+      sources: [],
+    };
+    logAudit("學生問答", `Gemini 生成失敗：${error.message}`);
+    renderPublishedQa();
+  } finally {
+    setAiBusy(false);
+  }
 }
 
 function retrievePublishedSources(question, revision) {
@@ -3963,20 +4145,6 @@ function hashString(value) {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function buildGroundedStudentAnswer(question, sources) {
-  const top = sources.slice(0, 3);
-  const keyPoints = top
-    .map((source, index) => `${index + 1}. ${source.preview.replace(/\s+/g, " ").slice(0, 110)}（信心 ${Math.round((source.confidence || 0) * 100)}%）`)
-    .join("\n");
-  return [
-    `根據已發布教材，這題可以先從 ${top[0].label} 理解。`,
-    "",
-    keyPoints,
-    "",
-    `簡短回答：${question} 的答案需要回到上面來源中的概念與例子；如果你想確認細節，請先打開來源片段，再對照老師發布的投影片。`,
-  ].join("\n");
 }
 
 function recordStudentFeedback(label) {
@@ -5089,11 +5257,11 @@ function renderAiStatus() {
   if (!dom.aiStatus) return;
   const status = state.ai.busy ? "checking" : state.ai.enabled ? "online" : state.ai.checked ? "fallback" : "checking";
   const providerName = formatAiProviderName(state.ai.provider);
-  const label = state.ai.busy ? state.ai.message : state.ai.enabled ? providerName : state.ai.message || "本機規則";
+  const label = state.ai.busy ? state.ai.message : state.ai.enabled ? providerName : state.ai.message || "Gemini 未設定";
   const detail = state.ai.enabled
     ? buildAiStatusDetail()
     : state.ai.checked
-      ? "未使用雲端 AI"
+      ? "所有生成位置必須連線 Gemini"
       : "檢查中";
   const checkedAt = state.ai.lastCheckedAt
     ? new Date(state.ai.lastCheckedAt).toLocaleTimeString("zh-Hant", { hour: "2-digit", minute: "2-digit" })
@@ -5120,7 +5288,7 @@ function setAiBusy(busy, message = "") {
     state.ai.message = `${formatAiProviderName(state.ai.provider)} 已連線`;
   }
   if (!busy && !state.ai.enabled && state.ai.checked) {
-    state.ai.message = "本機規則";
+    state.ai.message = "Gemini 未設定";
   }
   renderAiStatus();
 }
@@ -5140,7 +5308,6 @@ function buildAiStatusDetail() {
 function formatAiProviderName(provider) {
   const normalized = String(provider || "").toLowerCase();
   if (normalized === "gemini") return "Gemini";
-  if (normalized === "openai") return "OpenAI";
   return "AI";
 }
 
@@ -5309,34 +5476,6 @@ function buildCoreScript(fragments, inputs) {
       return `${index + 1}. ${cue}：${fragment}\n教師口語提示：這裡不要只要求學生記住答案，要追問「為什麼這個線索可以支持你的判斷」。`;
     })
     .join("\n\n");
-}
-
-function buildAssistantResponse(question, context) {
-  const inputs = state.lastLessonInputs || getLessonInputs();
-  if (question.includes("查核") || question.toLowerCase().includes("fact")) {
-    return [
-      `可先把「${inputs.topic}」相關說法拆成三類：定義、數據、推論。`,
-      "1. 定義：確認用詞是否和教材或課綱一致。",
-      "2. 數據：標出年份、來源與適用範圍，避免把研究結論說成普遍定律。",
-      "3. 推論：提醒學生目前是根據哪些證據作判斷。",
-      "課堂措辭：這個說法我先標記為待查證，我們用資料來源和推論鏈來確認。",
-    ].join("\n");
-  }
-
-  if (question.includes("互動") || question.includes("活動")) {
-    return `安排 3 分鐘快速互動：先讓學生個人寫下「${inputs.topic}」的一個關鍵因果關係，再兩人互換檢查，最後請一組說出他們如何判斷答案可靠。`;
-  }
-
-  if (question.toLowerCase().includes("exit")) {
-    return `Exit Ticket：請用不超過 40 字回答「${inputs.topic} 中最重要的一個因果關係是什麼？請指出原因與結果。」`;
-  }
-
-  return [
-    `可這樣回應：${question}`,
-    "",
-    `先用一句話定義問題，再連回目前課堂脈絡：「${context.slice(0, 120)}」。`,
-    `接著給學生一個判斷準則：如果答案能同時說明概念、證據與限制，就代表理解已經到達 ${inputs.style} 課堂期待的層次。`,
-  ].join("\n");
 }
 
 function buildAssistantContext() {
@@ -5578,7 +5717,7 @@ ${state.script || "尚未生成講稿"}
 
 ## AI 生成透明度
 
-本內容由 AI 或本機規則協助生成，仍需教師完成最後審核。
+本內容由 Gemini AI 協助生成，仍需教師完成最後審核。
 ${state.publishedRevision ? `\n發布版本：${state.publishedRevision.id}｜${new Date(state.publishedRevision.publishedAt).toLocaleString("zh-Hant")}\n` : ""}
 
 ${audit || "尚未有生成紀錄"}

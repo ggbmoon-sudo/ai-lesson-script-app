@@ -8,9 +8,7 @@ loadEnvFile(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
-const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "auto");
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "gemini");
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL || "high");
@@ -139,6 +137,199 @@ const assistantSchema = {
   },
 };
 
+const stringArraySchema = {
+  type: "array",
+  minItems: 0,
+  maxItems: 20,
+  items: { type: "string" },
+};
+
+const pptxChecklistItemSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["slide_no", "title", "big_topic", "subtopic", "teaching_minutes", "template_id", "visible_text", "visual_direction", "speaker_notes", "lab_bridge", "qa_gate"],
+  properties: {
+    slide_no: { type: "number" },
+    title: { type: "string" },
+    big_topic: { type: "string" },
+    subtopic: { type: "string" },
+    teaching_minutes: { type: "number" },
+    template_id: { type: "string" },
+    visible_text: stringArraySchema,
+    visual_direction: { type: "string" },
+    speaker_notes: stringArraySchema,
+    lab_bridge: { type: "string" },
+    qa_gate: stringArraySchema,
+    resource_profile: stringArraySchema,
+    official_alignment: stringArraySchema,
+  },
+};
+
+const slideSpecItemSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["slide_no", "section", "subtopic", "purpose", "renderer_hint", "required_notes"],
+  properties: {
+    slide_no: { type: "number" },
+    section: { type: "string" },
+    subtopic: { type: "string" },
+    purpose: { type: "string" },
+    renderer_hint: { type: "string" },
+    required_notes: { type: "string" },
+    repeatsEveryHour: { type: "boolean" },
+  },
+};
+
+const lecturePptxSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "subtopics", "teachingMinutes", "slideTarget", "templateId", "outcomes", "pptFocus", "recordingCue", "duplicateCleanup", "slideSpec", "pptxChecklist", "qaChecklist"],
+  properties: {
+    title: { type: "string" },
+    subtopics: stringArraySchema,
+    teachingMinutes: { type: "number" },
+    slideTarget: { type: "number" },
+    templateId: { type: "string" },
+    outcomes: stringArraySchema,
+    pptFocus: stringArraySchema,
+    recordingCue: { type: "string" },
+    duplicateCleanup: { type: "string" },
+    slideSpec: {
+      type: "array",
+      minItems: 1,
+      maxItems: 80,
+      items: slideSpecItemSchema,
+    },
+    pptxChecklist: {
+      type: "array",
+      minItems: 1,
+      maxItems: 80,
+      items: pptxChecklistItemSchema,
+    },
+    qaChecklist: stringArraySchema,
+  },
+};
+
+const annualPlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "lectureUnits", "labs", "assessments", "pptConsolidation", "qaGates", "accessibilityChecklist", "complianceNotes"],
+  properties: {
+    summary: { type: "string" },
+    lectureUnits: {
+      type: "array",
+      minItems: 1,
+      maxItems: 60,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "title", "subtopics", "outcomes", "pptFocus", "recordingCue", "duplicateCleanup", "slideSpec", "pptxChecklist", "qaChecklist"],
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          subtopics: stringArraySchema,
+          outcomes: stringArraySchema,
+          pptFocus: stringArraySchema,
+          recordingCue: { type: "string" },
+          duplicateCleanup: { type: "string" },
+          slideSpec: { type: "array", minItems: 1, maxItems: 80, items: slideSpecItemSchema },
+          pptxChecklist: { type: "array", minItems: 1, maxItems: 80, items: pptxChecklistItemSchema },
+          qaChecklist: stringArraySchema,
+        },
+      },
+    },
+    labs: {
+      type: "array",
+      minItems: 0,
+      maxItems: 30,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "title", "environment", "outcome", "deliverables", "rubric"],
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          environment: { type: "string" },
+          outcome: { type: "string" },
+          deliverables: stringArraySchema,
+          rubric: stringArraySchema,
+        },
+      },
+    },
+    assessments: {
+      type: "array",
+      minItems: 0,
+      maxItems: 20,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "title", "weight", "deliverables", "rules"],
+        properties: {
+          type: { type: "string" },
+          title: { type: "string" },
+          weight: { type: "string" },
+          deliverables: stringArraySchema,
+          rules: stringArraySchema,
+        },
+      },
+    },
+    pptConsolidation: stringArraySchema,
+    qaGates: stringArraySchema,
+    accessibilityChecklist: stringArraySchema,
+    complianceNotes: stringArraySchema,
+  },
+};
+
+const markdownContentSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "markdown"],
+  properties: {
+    title: { type: "string" },
+    markdown: { type: "string" },
+  },
+};
+
+const assessmentBankSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "markdown", "assessmentContents"],
+  properties: {
+    title: { type: "string" },
+    markdown: { type: "string" },
+    assessmentContents: {
+      type: "array",
+      minItems: 0,
+      maxItems: 20,
+      items: markdownContentSchema,
+    },
+  },
+};
+
+const scriptRevisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["script"],
+  properties: {
+    script: { type: "string" },
+  },
+};
+
+const slideRevisionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "activity", "notes", "speakerNotes", "suggestedLayout", "suggestedVisual", "factCheckPoints"],
+  properties: {
+    title: { type: "string" },
+    activity: { type: "string" },
+    notes: { type: "string" },
+    speakerNotes: { type: "string" },
+    suggestedLayout: { type: "string" },
+    suggestedVisual: { type: "string" },
+    factCheckPoints: stringArraySchema,
+  },
+};
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -161,7 +352,6 @@ const server = http.createServer(async (req, res) => {
             }
           : null,
         availableProviders: {
-          openai: Boolean(OPENAI_API_KEY),
           gemini: Boolean(GEMINI_API_KEY),
         },
         environment: process.env.NODE_ENV || "development",
@@ -217,7 +407,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const provider = resolveAiProvider();
-  const mode = provider ? `AI enabled (${provider.name}: ${provider.model})` : "local fallback only";
+  const mode = provider ? `Gemini enabled (${provider.model})` : "Gemini required but not configured";
   const url = PUBLIC_BASE_URL || `http://localhost:${PORT}`;
   console.log(`EduScript AI Studio running at ${url} - ${mode}`);
 });
@@ -226,7 +416,7 @@ async function handleAiRequest(req, res, pathname) {
   const provider = resolveAiProvider();
   if (!provider) {
     return sendJson(res, 503, {
-      error: "No AI provider key is set. Add OPENAI_API_KEY or GEMINI_API_KEY, or use the frontend local fallback generation.",
+      error: "Gemini AI generation is required. Set AI_PROVIDER=gemini and GEMINI_API_KEY, then restart the server.",
     });
   }
 
@@ -258,6 +448,86 @@ async function handleAiRequest(req, res, pathname) {
       schemaName: "classroom_assistant",
       schema: assistantSchema,
       input: buildAssistantPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/student-qa") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "student_grounded_qa",
+      schema: assistantSchema,
+      input: buildStudentQaPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/annual-plan") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "annual_course_plan",
+      schema: annualPlanSchema,
+      input: buildAnnualPlanPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lecture-pptx") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_generation_plan",
+      schema: lecturePptxSchema,
+      input: buildLecturePptxPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lab-content") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "lab_content_markdown",
+      schema: markdownContentSchema,
+      input: buildLabContentPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/assessment-content") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "assessment_content_markdown",
+      schema: markdownContentSchema,
+      input: buildAssessmentContentPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/assessment-bank") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "assessment_bank_markdown",
+      schema: assessmentBankSchema,
+      input: buildAssessmentBankPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/script-revision") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "script_revision",
+      schema: scriptRevisionSchema,
+      input: buildScriptRevisionPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/slide-revision") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "slide_revision",
+      schema: slideRevisionSchema,
+      input: buildSlideRevisionPrompt(body),
     });
     return sendJson(res, 200, result);
   }
@@ -1120,48 +1390,10 @@ function themeXml() {
 
 
 async function createStructuredResponse({ provider, schemaName, schema, input }) {
-  if (provider.name === "gemini") {
-    return createGeminiStructuredResponse({ schemaName, schema, input });
+  if (provider.name !== "gemini") {
+    throw new Error("Gemini AI generation is required for every generation endpoint.");
   }
-
-  return createOpenAiStructuredResponse({ schemaName, schema, input });
-}
-
-async function createOpenAiStructuredResponse({ schemaName, schema, input }) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      instructions: AI_INSTRUCTIONS,
-      input,
-      text: {
-        format: {
-          type: "json_schema",
-          name: schemaName,
-          strict: true,
-          schema,
-        },
-      },
-    }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const detail = payload.error?.message || response.statusText;
-    throw new Error(`OpenAI request failed: ${detail}`);
-  }
-
-  const text = payload.output_text || extractOutputText(payload);
-  if (!text) {
-    throw new Error("OpenAI response did not include output_text.");
-  }
-
-  return parseStructuredJson(text, "OpenAI");
+  return createGeminiStructuredResponse({ schemaName, schema, input });
 }
 
 async function createGeminiStructuredResponse({ schemaName, schema, input }) {
@@ -1200,6 +1432,142 @@ async function createGeminiStructuredResponse({ schemaName, schema, input }) {
   }
 
   return parseStructuredJson(text, "Gemini");
+}
+
+function buildAnnualPlanPrompt({ inputs, seedPlan }) {
+  return `你是資深課程架構師、PPTX 製作總監與教學 QA 審查員。請使用 Gemini AI 重新生成一份專業、全面、可執行的全年課程包規劃。
+
+要求：
+1. 必須根據使用者的每週清單、官方來源、資源限制與 seedPlan 重新整理。
+2. lectureUnits 每一項都要有大題目、子題目、outcomes、pptFocus、recordingCue、duplicateCleanup。
+3. 每一個 lecture 必須輸出 slideSpec 與 pptxChecklist；pptxChecklist 要逐頁列出 visible_text、visual_direction、speaker_notes、lab_bridge、qa_gate。
+4. labs 必須有 environment、outcome、deliverables、rubric。
+5. assessments 必須有 type、title、weight、deliverables、rules。
+6. qaGates 與 accessibilityChecklist 必須能阻擋不合格教材發布。
+7. 請使用繁體中文；技術名詞可保留英文。
+
+使用者輸入：
+${JSON.stringify(inputs || {}, null, 2)}
+
+目前本機 seed plan：
+${JSON.stringify(seedPlan || {}, null, 2)}`;
+}
+
+function buildLecturePptxPrompt({ unit, inputs }) {
+  return `你是專業 PPTX 教學設計師。請針對這個 Lecture 生成可直接交給 PPTX renderer / Gamma / PowerPoint 製作的詳細逐頁清單。
+
+必須做到：
+1. 使用使用者輸入的大題目、子題目與教學時間。
+2. slideTarget 必須與教學時間和每小時頁數對齊。
+3. pptxChecklist 必須逐頁包含 visible_text、visual_direction、speaker_notes、lab_bridge、qa_gate。
+4. 每頁 visible_text 不超過 4 個 bullets；speaker_notes 要有答案鍵、checkpoint 或 fallback。
+5. 加入 accessibility：唯一標題、alt text、reading order、contrast check。
+6. 使用繁體中文；技術命令、YAML、產品名可保留英文。
+
+課程輸入：
+${JSON.stringify(inputs || {}, null, 2)}
+
+Lecture 目前資料：
+${JSON.stringify(unit || {}, null, 2)}`;
+}
+
+function buildLabContentPrompt({ lab, plan, index }) {
+  return `你是 CA Lab 設計師與技術助教。請用 Gemini AI 生成完整 Lab markdown，不可只列大綱。
+
+輸出 markdown 必須包含：
+- Student brief
+- Learning goal
+- Environment / resources
+- Prerequisites
+- Step-by-step instructions
+- Expected outputs
+- Evidence pack
+- Troubleshooting guide
+- Teacher answer key
+- Rubric
+- QA / safety / cleanup checklist
+
+Lab index: ${index}
+Lab:
+${JSON.stringify(lab || {}, null, 2)}
+
+Annual plan context:
+${JSON.stringify(plan || {}, null, 2)}`;
+}
+
+function buildAssessmentContentPrompt({ assessment, plan, index }) {
+  return `你是 assessment designer、moderator 與 rubric reviewer。請用 Gemini AI 生成完整 assessment markdown。
+
+輸出 markdown 必須包含：
+- Assessment brief
+- Goal and assessed outcomes
+- Format and time
+- Deliverables
+- Rules / integrity notes
+- Question set or practical task set
+- Model answer / answer key for teacher
+- Evidence requirements
+- Rubric table
+- Moderation / QA checklist
+
+Assessment index: ${index}
+Assessment:
+${JSON.stringify(assessment || {}, null, 2)}
+
+Annual plan context:
+${JSON.stringify(plan || {}, null, 2)}`;
+}
+
+function buildAssessmentBankPrompt({ plan }) {
+  return `你是全年課程 assessment bank architect。請用 Gemini AI 為整個 course package 生成 assessment 題庫與 rubric markdown。
+
+必須包含：
+- 使用原則
+- CA / EA 結構
+- 每個 assessment 的題目、答案鍵、rubric、moderation notes
+- practical skill test 的 no-hint 設計
+- evidence pack 與 public endpoint 驗收規則
+- 教師審核 checklist
+
+Annual plan:
+${JSON.stringify(plan || {}, null, 2)}`;
+}
+
+function buildScriptRevisionPrompt({ script, context, mode }) {
+  return `你是資深教師講稿編修員。請用 Gemini AI 依指定模式修訂講稿，回傳完整 script。
+
+模式：${mode || "expand"}
+
+要求：
+1. 保留原有章節結構。
+2. 補強教師口語稿、轉場語、checkpoint、demo fallback。
+3. 不輸出 prompt 解釋，只輸出修訂後完整講稿。
+4. 使用繁體中文；技術名詞可保留英文。
+
+Context:
+${JSON.stringify(context || {}, null, 2)}
+
+Current script:
+${script || ""}`;
+}
+
+function buildSlideRevisionPrompt({ slide, feedback, inputs }) {
+  return `你是專業 PPT prompt editor。請用 Gemini AI 根據教師意見重寫單頁 slide 的 PPT 生成 prompt。
+
+要求：
+1. 保留 slide 的教學目標，但改善 visible text、activity、speaker notes、layout、visual。
+2. notes 必須是可直接給 PPTX/Gamma renderer 使用的 prompt。
+3. 必須包含 slide_body、speaker_notes、suggested_layout、visual_preference、fact_check_points 等明確欄位。
+4. 使用繁體中文；技術名詞可保留英文。
+
+課程資料：
+${JSON.stringify(inputs || {}, null, 2)}
+
+原 slide：
+${JSON.stringify(slide || {}, null, 2)}
+
+教師修改意見：
+${feedback || ""}`;
 }
 
 function buildLessonPrompt({ inputs }) {
@@ -1333,16 +1701,25 @@ ${question}
 3. nextMove 給教師下一步課堂操作。`;
 }
 
-function extractOutputText(payload) {
-  const chunks = [];
-  for (const item of payload.output || []) {
-    for (const content of item.content || []) {
-      if (content.type === "output_text" && content.text) {
-        chunks.push(content.text);
-      }
-    }
-  }
-  return chunks.join("\n");
+function buildStudentQaPrompt({ question, supported, sources = [], revisionMeta = {} }) {
+  return `你是課程學生端問答助理。請只根據已發布教材來源回答；不可自行補充教材外內容。
+
+問題：
+${question || ""}
+
+發布版本資料：
+${JSON.stringify(revisionMeta || {}, null, 2)}
+
+檢索是否達到支持門檻：${supported ? "yes" : "no"}
+
+已發布教材來源：
+${JSON.stringify(sources || [], null, 2)}
+
+要求：
+1. 如果 supported 為 false 或 sources 不足，answer 必須清楚拒答，說明目前教材未提供足夠依據，並請學生找老師補充或換一個更貼近教材的問題。
+2. 如果 supported 為 true，answer 必須用學生容易理解的繁體中文回答，並點名引用來源 label；不得引入來源以外的新事實。
+3. checks 列出答案需要教師確認或來源限制。
+4. nextMove 給學生下一步應查看哪個來源或如何追問。`;
 }
 
 function extractGeminiText(payload) {
@@ -1468,20 +1845,8 @@ function classifyGeminiModel(model) {
 }
 
 function resolveAiProvider() {
-  if (AI_PROVIDER === "openai") {
-    return OPENAI_API_KEY ? { name: "openai", model: OPENAI_MODEL } : null;
-  }
-
-  if (AI_PROVIDER === "gemini") {
+  if (AI_PROVIDER === "gemini" || AI_PROVIDER === "auto") {
     return GEMINI_API_KEY ? { name: "gemini", model: GEMINI_MODEL } : null;
-  }
-
-  if (OPENAI_API_KEY) {
-    return { name: "openai", model: OPENAI_MODEL };
-  }
-
-  if (GEMINI_API_KEY) {
-    return { name: "gemini", model: GEMINI_MODEL };
   }
 
   return null;
@@ -1489,7 +1854,7 @@ function resolveAiProvider() {
 
 function normalizeProvider(value) {
   const provider = String(value || "auto").trim().toLowerCase();
-  return ["auto", "openai", "gemini"].includes(provider) ? provider : "auto";
+  return ["auto", "gemini"].includes(provider) ? provider : "gemini";
 }
 
 function normalizeGammaExport(value) {

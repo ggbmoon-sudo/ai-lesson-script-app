@@ -25,7 +25,7 @@
 - 治理指標：顯示發布狀態、citation chunk 數、QA 有據率、拒答率與需老師介入次數。
 - 個人備份：支援本機 JSON 匯入/匯出、Google Drive 雲端備份與還原、未備份提醒與自動備份開關。
 - 匯出：支援 Markdown、JSON、伺服器模式 PPTX，以及一鍵 Course Pack ZIP。
-- AI 狀態燈：顯示 Gemini / OpenAI / 本機 fallback，並可在 APP 內重新檢查連線。
+- AI 狀態燈：顯示 Gemini 連線狀態，並可在 APP 內重新檢查連線。
 - AI 透明度：記錄教材生成、講稿生成、解析、匯出、版本保存等事件。
 
 ## 使用方式
@@ -38,14 +38,14 @@
 index.html
 ```
 
-這個模式不需要後端或 API key，會使用本機規則生成教材與講稿。
+這個模式只適合查看介面與既有資料；所有生成位置都需要 AI 伺服器模式連線 Gemini。
 
 ### AI 伺服器模式
 
 需要 Node.js 18 或以上。
 
 1. 複製 `.env.example` 為 `.env`
-2. 在 `.env` 填入 `OPENAI_API_KEY`
+2. 在 `.env` 填入 `GEMINI_API_KEY`
 3. 啟動伺服器
 
 ```bash
@@ -60,7 +60,7 @@ node server.js
 http://localhost:4173
 ```
 
-有 API key 時，教材生成、講稿生成與即時助理會透過 `server.js` 呼叫 OpenAI Responses API。沒有 API key 時，前端會自動回到本機規則生成。
+教材生成、全年規劃、Lecture/PPT 清單、Lab、Assessment、講稿、即時助理與學生問答都會透過 `server.js` 呼叫 Gemini。沒有 Gemini key 時，前端會顯示錯誤並停止生成，不會改用本機規則。
 
 如果你想讓 Google Drive OAuth Client ID 自動出現在 APP，可在 `.env` 加入：
 
@@ -68,7 +68,7 @@ http://localhost:4173
 GOOGLE_DRIVE_CLIENT_ID=你的_client_id.apps.googleusercontent.com
 ```
 
-Gemini 也可作為 AI 後端。如果你沒有 OpenAI token，在 `.env` 這樣設定：
+`.env` 必須使用 Gemini：
 
 ```text
 AI_PROVIDER=gemini
@@ -79,7 +79,7 @@ GEMINI_TEMPERATURE=0.25
 GEMINI_SCRIPT_MAX_OUTPUT_TOKENS=32768
 ```
 
-`AI_PROVIDER=auto` 會先用 OpenAI key；沒有 OpenAI key 時會改用 Gemini key。兩者都沒有時，APP 仍會使用本機規則生成。高品質完整講稿建議使用 `gemini-3-pro-preview` + `GEMINI_THINKING_LEVEL=high`；如果想節省延遲或成本，可改為 `gemini-3-flash-preview`。Gemini 2.5 系列可用 `GEMINI_THINKING_BUDGET=-1` 啟用 dynamic thinking。
+`AI_PROVIDER` 請維持 `gemini`。高品質完整講稿建議使用 Pro / Thinking 類 Gemini model，並保留 `GEMINI_THINKING_LEVEL=high` 與足夠的 output tokens。
 
 講稿生成流程已改為兩階段：先把 PPTX 解析成乾淨的 `slide_json`，每頁保留 `slide_no`、`slide_title`、`slide_subtitle`、`slide_body`、`visual_description`、`speaker_notes`、`source_type` 與 `extracted_from`；再把完整 `slide_json`、課程資訊、訪談資料、學習目標、對象、時長與風格交給 Gemini 生成逐頁教師口語講稿。APP 會避免把 PPT Prompt、compiler prompt、debug log 或版本紀錄混入正式講稿。
 
@@ -96,10 +96,8 @@ AI 狀態燈會顯示 Gemini 是否屬於高階模型、目前 temperature，以
 Render 會以 Node web service 執行 `server.js`，保留 AI proxy、PPTX 匯出、教材解析與 Google Drive 設定載入功能。部署後要在 Render 設定環境變數，不要把真實 key 提交到 GitHub：
 
 ```text
-AI_PROVIDER=auto
-OPENAI_API_KEY=你的 OpenAI key，可留空
-OPENAI_MODEL=gpt-5.2
-GEMINI_API_KEY=你的 Gemini key，可留空
+AI_PROVIDER=gemini
+GEMINI_API_KEY=你的 Gemini key
 GEMINI_MODEL=gemini-3-pro-preview
 GEMINI_THINKING_LEVEL=high
 GOOGLE_DRIVE_CLIENT_ID=你的 Google OAuth Client ID
@@ -155,7 +153,7 @@ https://你的服務.onrender.com
 - `preview`
 - 簡易搜尋向量
 
-學生提問時會用關鍵詞重疊與 cosine similarity 近似排序來源，並顯示 confidence。這不是正式向量資料庫，但資料結構已為未來接 embeddings / pgvector / OpenAI File Search / Azure AI Search 做準備。
+學生提問時會用關鍵詞重疊與 cosine similarity 近似排序來源，並顯示 confidence。這不是正式向量資料庫，但資料結構已為未來接 embeddings、pgvector 或其他 managed search 做準備。
 
 ### 個人備份與 Google Drive
 
