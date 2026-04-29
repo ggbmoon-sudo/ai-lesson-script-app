@@ -1066,23 +1066,45 @@ async function updateAnnualLectureFromCard(index) {
   unit.hours = roundOne(minutes / 60);
   unit.pptSlides = calculateLectureSlideTarget(minutes, plan.inputs.slidesPerHour);
   updateLectureDerivedFields(unit, plan.inputs, index);
+  unit.aiRefresh = {
+    state: "running",
+    message: `Gemini 正在根據「${unit.title}」與 ${unit.videoMinutes} 分鐘重新生成中間教學重點、PPT spec 與逐頁清單。`,
+    updatedAt: new Date().toISOString(),
+  };
+  recalculateAnnualMetrics(plan);
+  syncAnnualLectureTimetable(plan);
+  renderAnnualPlan();
+  persistState();
+
   setAiBusy(true, "Gemini 更新 Lecture/PPT 清單中");
   try {
     const aiUnit = await requestAi("lecture-pptx", { unit, inputs: plan.inputs });
     Object.assign(unit, mergeLectureAiUnit(unit, aiUnit, plan.inputs, index));
+    unit.aiRefresh = {
+      state: "done",
+      message: `Gemini 已更新：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`,
+      updatedAt: new Date().toISOString(),
+    };
   } catch (error) {
     console.warn(error);
-    if (dom.compareBox) dom.compareBox.textContent = `Gemini Lecture/PPT 清單更新失敗：${error.message}`;
+    unit.aiRefresh = {
+      state: "error",
+      message: `Gemini Lecture/PPT 清單更新失敗：${error.message}`,
+      updatedAt: new Date().toISOString(),
+    };
+    if (dom.compareBox) dom.compareBox.textContent = unit.aiRefresh.message;
+    logAudit("Lecture/PPT 編輯", unit.aiRefresh.message);
+  } finally {
     setAiBusy(false);
-    return;
   }
   recalculateAnnualMetrics(plan);
   syncAnnualLectureTimetable(plan);
-  logAudit("Lecture/PPT 編輯", `Gemini 更新 ${unit.id}：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
+  if (unit.aiRefresh.state === "done") {
+    logAudit("Lecture/PPT 編輯", `Gemini 更新 ${unit.id}：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
+  }
   renderAnnualPlan();
   markDriveBackupNeeded("Gemini Lecture/PPT 清單編輯");
   persistState();
-  setAiBusy(false);
 }
 
 function updateLectureDerivedFields(unit, inputs, index, options = {}) {
@@ -1965,6 +1987,54 @@ function renderAll() {
   applyRolePermissions();
 }
 
+function getLectureRefreshState(unit) {
+  return unit?.aiRefresh && ["running", "done", "error"].includes(unit.aiRefresh.state) ? unit.aiRefresh : null;
+}
+
+function renderLectureAiRefreshNotice(unit) {
+  const refresh = getLectureRefreshState(unit);
+  if (!refresh) return "";
+  const label = refresh.state === "running" ? "Gemini 生成中" : refresh.state === "done" ? "Gemini 已更新" : "Gemini 生成失敗";
+  return `<div class="lecture-ai-notice ${escapeHtml(refresh.state)}"><strong>${label}</strong><span>${escapeHtml(refresh.message || "")}</span></div>`;
+}
+
+function getLectureRecordingCue(unit) {
+  const refresh = getLectureRefreshState(unit);
+  if (refresh?.state === "running") {
+    return "Gemini 正在重新生成教學段落、學習成果、PPT spec 與 QA gate。";
+  }
+  if (refresh?.state === "error") {
+    return refresh.message || "Gemini 未能完成更新，請檢查 API key / Secrets / server 狀態。";
+  }
+  return unit.recordingCue || "Gemini 尚未生成 recording cue。";
+}
+
+function renderLectureOutcomeList(unit) {
+  const refresh = getLectureRefreshState(unit);
+  if (refresh?.state === "running") {
+    return "<ul><li>Gemini 正在根據新的大題目、子題目與教學時間重新生成學習成果。</li></ul>";
+  }
+  if (refresh?.state === "error") {
+    return "<ul><li>Gemini 未完成更新；請確認 Codespaces Secrets 已授權此 repo，並重啟 server 後再按「更新清單」。</li></ul>";
+  }
+  const outcomes = Array.isArray(unit.outcomes) && unit.outcomes.length ? unit.outcomes : ["Gemini 尚未回傳學習成果。"];
+  return `<ul>${outcomes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
+function getLecturePptSpecSummary(unit) {
+  const refresh = getLectureRefreshState(unit);
+  if (refresh?.state === "running") return "PPT spec：Gemini 正在重寫逐頁 purpose / visible text / speaker notes...";
+  if (refresh?.state === "error") return "PPT spec：Gemini 未完成，暫停使用舊清單，避免輸出錯誤主題。";
+  return `PPT spec：${(unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → ")}${unit.slideSpec?.length > 4 ? "..." : ""}`;
+}
+
+function getLectureQaSummary(unit) {
+  const refresh = getLectureRefreshState(unit);
+  if (refresh?.state === "running") return "QA：Gemini 正在對齊 duration、slide target、teaching purpose 與 lab bridge。";
+  if (refresh?.state === "error") return "QA：請先修復 Gemini 連線後重新生成。";
+  return `QA：${(unit.qaChecklist || []).slice(0, 3).join("；")}`;
+}
+
 function renderAnnualPlan() {
   if (!dom.annualMetrics) return;
   const plan = state.annualPlan;
@@ -2029,16 +2099,17 @@ function renderAnnualPlan() {
           <textarea rows="3" data-lecture-subtopics="${index}" ${canEditAnnual ? "" : "disabled"}>${escapeHtml((unit.subtopics?.length ? unit.subtopics : inferLectureSubtopics(unit.title, null, unit.focus || inferLectureFocus(unit.title))).join("\n"))}</textarea>
         </label>
       </div>
-      <p>${escapeHtml(unit.recordingCue)}</p>
+      ${renderLectureAiRefreshNotice(unit)}
+      <p>${escapeHtml(getLectureRecordingCue(unit))}</p>
       <div class="spec-chip-row">
         <span>${escapeHtml(unit.templateId || "LT-CORE")}</span>
         <span>${escapeHtml(unit.metadata?.module_id || "module")}</span>
         <span>${escapeHtml(unit.metadata?.difficulty || "intermediate")}</span>
         <span>${escapeHtml((unit.metadata?.resource_profile || []).slice(0, 3).join(" / "))}</span>
       </div>
-      <ul>${unit.outcomes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-      <small>PPT spec：${escapeHtml((unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → "))}${unit.slideSpec?.length > 4 ? "..." : ""}</small>
-      <small>QA：${escapeHtml((unit.qaChecklist || []).slice(0, 3).join("；"))}</small>
+      ${renderLectureOutcomeList(unit)}
+      <small>${escapeHtml(getLecturePptSpecSummary(unit))}</small>
+      <small>${escapeHtml(getLectureQaSummary(unit))}</small>
       <small>${escapeHtml(unit.duplicateCleanup)}</small>
       ${renderLecturePptxChecklist(unit)}
     </article>
@@ -2084,12 +2155,6 @@ function renderAnnualPlan() {
   });
   dom.annualLecturePlan.querySelectorAll("[data-lecture-refresh]").forEach((button) => {
     button.addEventListener("click", () => updateAnnualLectureFromCard(Number(button.dataset.lectureRefresh)));
-  });
-  dom.annualLecturePlan.querySelectorAll("[data-lecture-title], [data-lecture-minutes], [data-lecture-subtopics]").forEach((input) => {
-    input.addEventListener("change", () => {
-      const index = Number(input.dataset.lectureTitle ?? input.dataset.lectureMinutes ?? input.dataset.lectureSubtopics);
-      updateAnnualLectureFromCard(index);
-    });
   });
   dom.annualLabPlan.querySelectorAll("[data-lab-content]").forEach((button) => {
     button.addEventListener("click", () => generateLabContent(Number(button.dataset.labContent)));

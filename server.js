@@ -2219,7 +2219,10 @@ function serveStatic(pathname, res) {
       return sendJson(res, 404, { error: "Not found" });
     }
     const contentType = mimeTypes[path.extname(filePath)] || "application/octet-stream";
-    res.writeHead(200, { "Content-Type": contentType });
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-store",
+    });
     res.end(data);
   });
 }

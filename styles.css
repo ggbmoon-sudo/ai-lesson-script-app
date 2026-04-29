@@ -915,6 +915,39 @@ legend {
   padding-left: 20px;
 }
 
+.lecture-ai-notice {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f7f6;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+
+.lecture-ai-notice strong {
+  color: var(--teal-dark);
+  font-size: 0.86rem;
+}
+
+.lecture-ai-notice span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.lecture-ai-notice.running {
+  background: #effaf8;
+  border-color: #a9d8cf;
+}
+
+.lecture-ai-notice.error {
+  background: #fff6f4;
+  border-color: #f2b8ad;
+}
+
+.lecture-ai-notice.error strong {
+  color: #a43d2f;
+}
+
 .lecture-edit-grid {
   border: 1px solid var(--line);
   border-radius: 8px;
