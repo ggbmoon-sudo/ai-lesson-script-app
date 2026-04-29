@@ -1902,7 +1902,7 @@ function buildScriptPrompt({ inputs, material, slideJson = [], courseJson = null
     ? slideJson
     : buildFallbackSlideJsonFromScriptPages(scriptPages, material, startPage);
   const course = courseJson || buildCourseJsonForScriptPrompt({ inputs, minutes, budget, wpm });
-  return `你是一位資深技術講師與教學設計師。請根據「完整 PPT slide_json」與「課程訪談資料」生成一份正式教師口語講稿。這份講稿要給老師直接上課使用，不是 prompt 匯出紀錄，也不是學生補充講義。
+  return `你是一位資深技術講師與教學設計師。請根據「已清洗的 PPT slide_json」與「課程訪談資料」生成一份正式教師口語講稿。這份講稿要給老師直接上課使用，不是 prompt 匯出紀錄，也不是學生補充講義。
 
 輸入資料：
 【課程資訊】
@@ -1920,12 +1920,13 @@ ${teacherInterview || inputs.interviewAnswers || "尚未提供"}
 3. 每頁固定輸出：teachingPurpose、spokenScript、transition。checkpoint 只在重點頁輸出；非重點頁請留空字串或省略。
 4. spokenScript 要像老師真的會講的話，不要只是複製投影片文字。每頁約 120-180 字，Demo / Troubleshooting 頁可較長；總字數只以核心講授分鐘估算。
 5. sourceTags 只能使用「原教材內容」「推定補充」「需教師確認」三種文字；來自 PPT 用「原教材內容」；AI 合理延伸用「推定補充」；需要老師確認用「需教師確認」。
-6. 禁止輸出內部 prompt、PPT Slide Compiler Prompt、debug log、版本紀錄、講者備註：1/2/3 這類解析殘留。
-7. Demo 頁必須包含操作流程、預期輸出、驗收條件、失敗 fallback。
-8. Troubleshooting 頁必須把錯誤現象對應到第一個要查的 command 或 evidence。
-9. 互動問題 / checkpoint 只選重點頁，約每 5 頁 1 次；優先給 Demo、Troubleshooting、Assessment 或概念轉折頁，不要每頁硬塞問題。
-10. generationLog 最後必須做自我檢查：是否每頁都有講稿、是否漏頁、checkpoint 是否只在重點頁、是否有重複模板句、是否有 prompt/debug log 殘留、哪些內容屬推定補充、哪些內容需教師確認。
-11. script 欄位請輸出 Markdown，格式為：
+6. 若 slide_json 仍殘留 PPTX/Gamma/renderer/prompt 字眼，只可把真正教學內容轉成口語講稿；不可朗讀或改寫「課程中繼資料 course_json」「本頁設定」「輸出格式」「硬性限制」「layout_preference」「visual_preference」「fact_check_points」「PPT Slide Compiler Prompt」等製作指令。
+7. 禁止輸出內部 prompt、PPT Slide Compiler Prompt、debug log、版本紀錄、講者備註：1/2/3 這類解析殘留。
+8. Demo 頁必須包含操作流程、預期輸出、驗收條件、失敗 fallback。
+9. Troubleshooting 頁必須把錯誤現象對應到第一個要查的 command 或 evidence。
+10. 互動問題 / checkpoint 只選重點頁，約每 5 頁 1 次；優先給 Demo、Troubleshooting、Assessment 或概念轉折頁，不要每頁硬塞問題。
+11. generationLog 最後必須做自我檢查：是否每頁都有講稿、是否漏頁、checkpoint 是否只在重點頁、是否有重複模板句、是否有 prompt/debug log / PPTX renderer 指令殘留、哪些內容屬推定補充、哪些內容需教師確認。
+12. script 欄位請輸出 Markdown，格式為：
 # 教師口語講稿
 ## 第 1 頁：{slide_title}
 來源：原教材內容 / 推定補充 / 需教師確認

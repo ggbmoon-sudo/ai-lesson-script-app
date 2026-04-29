@@ -3491,6 +3491,20 @@ function normalizeSlideJsonFromParsedPpt(slide) {
 }
 
 function pageToSlideJson(page, index, extractedFrom = "ppt") {
+  const promptFields = extractSlideFieldsFromPromptDraft(page.text || "");
+  if (promptFields) {
+    const fallbackTitle = page.title || promptFields.title || promptFields.body[0];
+    return {
+      slide_no: Number(page.number) || index + 1,
+      slide_title: sanitizeLectureTitle(fallbackTitle, index),
+      slide_subtitle: sanitizeLectureSourceText(promptFields.subtitle.join("\n")),
+      slide_body: sanitizeLectureSourceText(promptFields.body.join("\n")),
+      visual_description: sanitizeLectureSourceText(promptFields.visual.join("\n")),
+      speaker_notes: sanitizeLectureSourceText(promptFields.notes.join("\n")),
+      source_type: "原教材內容",
+      extracted_from: `${extractedFrom}_prompt_fields`,
+    };
+  }
   const rawText = sanitizeLectureSourceText(page.text || "");
   const speakerNotes = extractSpeakerNotesFromCleanText(rawText);
   const bodyWithoutNotes = removeSpeakerNotesFromText(rawText);
@@ -3508,6 +3522,36 @@ function pageToSlideJson(page, index, extractedFrom = "ppt") {
     source_type: "原教材內容",
     extracted_from: extractedFrom,
   };
+}
+
+function extractSlideFieldsFromPromptDraft(text) {
+  const title = firstPromptField(text, "slide_title");
+  const subtitle = extractPromptFieldLinesClient(text, "slide_subtitle");
+  const body = extractPromptFieldLinesClient(text, "slide_body");
+  const notes = extractPromptFieldLinesClient(text, "speaker_notes");
+  const visual = extractPromptFieldLinesClient(text, "suggested_visual");
+  const usefulBody = body.filter(hasRealPromptFieldContent);
+  const usefulNotes = notes.filter(hasRealPromptFieldContent);
+  const usefulSubtitle = subtitle.filter(hasRealPromptFieldContent);
+  const usefulVisual = visual.filter(hasRealPromptFieldContent);
+  if (!title && !usefulSubtitle.length && !usefulBody.length && !usefulNotes.length && !usefulVisual.length) {
+    return null;
+  }
+  return {
+    title,
+    subtitle: usefulSubtitle,
+    body: usefulBody,
+    notes: usefulNotes,
+    visual: usefulVisual,
+  };
+}
+
+function hasRealPromptFieldContent(value) {
+  const text = clean(value);
+  return Boolean(text)
+    && !/^[:：-]*$/.test(text)
+    && !/^\{.+\}$/.test(text)
+    && !/^(suggested_|slide_|presenter_cues|fact_check_points)/i.test(text);
 }
 
 function appSlideToCleanSlideJson(slide, index) {
@@ -3655,20 +3699,84 @@ function buildTeacherInterviewForScript(inputs) {
 }
 
 function sanitizeLectureSourceText(text) {
-  return String(text || "")
+  return stripPptPromptNoiseForScript(text)
     .replace(/\r/g, "\n")
     .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
     .filter((line) => !/^講者備註[:：]?\s*(\d+[\s、,.;：:]*){1,12}$/u.test(line))
     .filter((line) => !/^(\d+[\s、,.;：:]*){1,12}$/u.test(line))
-    .filter((line) => !/^(PPT Slide Compiler Prompt|Revision Request|輸出格式|硬性限制|本頁素材|建議講者備忘稿|需查核事項)$/i.test(line))
-    .filter((line) => !/^(slide_no|slide_type|slide_goal|teaching_event|bloom_level|time_budget_min|layout_preference|visual_preference|linked_assessment)\s*:/i.test(line))
+    .filter((line) => !/^(PPT Slide Compiler Prompt|Revision Request|輸出格式|硬性限制|本頁素材|本頁設定|課程中繼資料 course_json|建議講者備忘稿|需查核事項)$/i.test(line))
+    .filter((line) => !/^(course_json|slide_no|slide_type|bloom_level|time_budget_min|style|layout_preference|visual_preference|linked_assessment)\b/i.test(line))
     .filter((line) => !/^(1\. slide_title|2\. slide_subtitle|3\. slide_body|4\. speaker_notes|5\. suggested_visual|6\. suggested_layout|7\. presenter_cues|8\. fact_check_points)\s*:?/i.test(line))
-    .filter((line) => !/^[-*]\s*(使用 16:9|每頁|不要杜撰|資訊性圖像|slide_body|speaker_notes|Alt text|decorative)/i.test(line))
+    .filter((line) => !/^[-*]\s*(使用 16:9|每頁|不要杜撰|資訊性圖像|slide_body|speaker_notes|Alt text|decorative|PPTX|Gamma|renderer|PowerPoint)/i.test(line))
+    .filter((line) => !/^(輸出|回傳|請輸出|請生成|你是|Create one presentation|Every card must|Keep slide_body)/i.test(line))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function stripPptPromptNoiseForScript(text) {
+  const raw = String(text || "").replace(/\r/g, "\n");
+  if (!hasPptPromptNoise(raw)) return raw;
+
+  const lines = raw.split(/\n/);
+  const kept = [];
+  let mode = "normal";
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      if (mode === "keep") kept.push("");
+      continue;
+    }
+
+    const bracketHeading = line.match(/^【(.+)】$/u)?.[1] || "";
+    if (bracketHeading) {
+      mode = isScriptUsefulPromptSection(bracketHeading) ? "keep" : "skip";
+      continue;
+    }
+
+    if (isPromptSectionHeading(line)) {
+      mode = isScriptUsefulPromptSection(line) ? "keep" : "skip";
+      continue;
+    }
+
+    const teachingValue = extractTeachingValueFromPromptLine(line);
+    if (teachingValue) {
+      kept.push(teachingValue);
+      continue;
+    }
+
+    if (mode === "skip" || isPptPromptNoiseLine(line)) continue;
+    kept.push(line);
+  }
+
+  return kept.join("\n");
+}
+
+function hasPptPromptNoise(text) {
+  return /PPT Slide Compiler Prompt|課程中繼資料\s*course_json|【本頁設定】|【輸出格式】|【硬性限制】|course_json\.|layout_preference|visual_preference|fact_check_points/i.test(text);
+}
+
+function isPromptSectionHeading(line) {
+  return /^(PPT Slide Compiler Prompt|Revision Request|課程中繼資料\s*course_json|本頁設定|輸出格式|硬性限制|投影片可讀性與可及性限制|本頁素材)[:：]?$/i.test(line);
+}
+
+function isScriptUsefulPromptSection(line) {
+  return /本頁素材|教材內容|教學內容|講者備忘|speaker notes/i.test(line);
+}
+
+function extractTeachingValueFromPromptLine(line) {
+  const match = line.match(/^(?:[-*]\s*)?(slide_goal|teaching_event|slide_body|speaker_notes|講者備忘稿重點|教學重點|linked_assessment)\s*[:：]\s*(.+)$/i);
+  if (!match) return "";
+  const value = clean(match[2]);
+  if (!value || isPptPromptNoiseLine(value)) return "";
+  return value;
+}
+
+function isPptPromptNoiseLine(line) {
+  return /course_json\.|workflow:|template catalog|slide prompt compiler|renderer|Gamma|PowerPoint|PPTX|輸出格式|硬性限制|本頁設定|課程中繼資料|suggested_layout|suggested_visual|presenter_cues|fact_check_points|layout_preference|visual_preference|time_budget_min|bloom_level|slide_type|slide_no|Alt text|decorative|16:9|18pt|sans serif|高對比|閱讀順序|不要杜撰|最多 4 個 bullets|控制在 \d+ 字內/i.test(line);
 }
 
 function sanitizeLectureTitle(title, index) {
@@ -5856,7 +5964,15 @@ function buildAssistantContext() {
 
 function buildMaterialFromSlides() {
   return state.slides
-    .map((slide) => `第 ${slide.number} 頁：${slide.title}\n${slide.notes}`)
+    .map((slide) => [
+      `第 ${slide.number} 頁：${slide.title}`,
+      slide.event && `頁面類型：${slide.event}`,
+      slide.activity && `教學重點：${slide.activity}`,
+      slide.speakerNotes && `講者備註：${slide.speakerNotes}`,
+      Array.isArray(slide.factCheckPoints) && slide.factCheckPoints.length
+        ? `需查核：${slide.factCheckPoints.join("；")}`
+        : "",
+    ].filter(Boolean).join("\n"))
     .join("\n\n");
 }
 
@@ -5865,8 +5981,8 @@ function sendSlidesToScriptMaterial() {
   dom.materialText.value = buildMaterialFromSlides();
   dom.assistantContext.value = buildAssistantContext();
   switchView("script");
-  setMaterialStatus("已把目前 PPT prompts 放入講稿素材。你也可以改為上傳真正生成後的 PPTX，再生成每堂講稿。", true);
-  logAudit("講稿素材", "目前 PPT prompt 已送到進度講稿頁");
+  setMaterialStatus("已把目前 PPT 教學重點與講者備忘放入講稿素材；PPTX renderer prompt / course_json / 硬性限制已不放入講稿來源。", true);
+  logAudit("講稿素材", "已送出清洗後的 PPT 教學內容到進度講稿頁");
   persistState();
 }
 
