@@ -811,11 +811,13 @@ function buildLectureUnit(topic, index, count, hours, inputs, weeklyItem = null)
   const templateId = inferLectureTemplateId(topic, pptSlides);
   const resourceProfile = inferResourceProfile(topic, inputs.resourceConstraints);
   const officialAlignment = inferOfficialAlignment(topic, inputs.officialRefs);
+  const subtopics = inferLectureSubtopics(topic, weeklyItem, focus);
   return {
     id: `L${index + 1}`,
     number: index + 1,
     week,
     title: topic,
+    subtopics,
     hours: roundOne(hours),
     videoMinutes: Math.round(hours * 60),
     pptSlides,
@@ -841,7 +843,17 @@ function buildLectureUnit(topic, index, count, hours, inputs, weeklyItem = null)
       source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
       review_status: "draft",
     },
-    slideSpec: buildLectureSlideSpec(topic, pptSlides),
+    slideSpec: buildLectureSlideSpec(topic, pptSlides, subtopics),
+    pptxChecklist: buildPptxGenerationChecklist({
+      topic,
+      subtopics,
+      slideTarget: pptSlides,
+      minutes: Math.round(hours * 60),
+      templateId,
+      focus,
+      resourceProfile,
+      officialAlignment,
+    }),
     qaChecklist: buildLectureQaChecklist(),
     outcomes: [
       `學生能說明 ${focus.core} 的用途與限制。`,
@@ -912,6 +924,141 @@ function classifyWeeklyItem(title) {
 
 function formatWeeklyItemAsSpec(item) {
   return `${item.type} ${item.week}：${item.title}`;
+}
+
+function inferLectureSubtopics(topic, weeklyItem, focus) {
+  const raw = [weeklyItem?.raw, topic].filter(Boolean).join("\n");
+  const candidates = raw
+    .split(/\r?\n|[；;]|、|,(?=\s*\S)/)
+    .map((item) => clean(item)
+      .replace(/^(?:week|wk|w)\s*\d+\s*[-:：).、]?\s*/i, "")
+      .replace(/^第\s*\d+\s*[週周]\s*[-:：).、]?\s*/, "")
+      .replace(/^(lecture|ppt|topic|subtopic|大題目|子題目)\s*\d*\s*[-:：).、]?\s*/i, ""))
+    .filter((item) => item && item !== topic);
+  const unique = Array.from(new Set(candidates)).slice(0, 8);
+  if (unique.length >= 3) return unique;
+  return [
+    `${focus.core} 概念框架`,
+    `${focus.task} 操作流程`,
+    "CLI / YAML demo walkthrough",
+    "常見錯誤與 troubleshooting 判斷",
+    "Lab bridge 與可驗收成果",
+  ];
+}
+
+function normalizeLectureSubtopics(value, fallback = []) {
+  const items = String(value || "")
+    .split(/\r?\n|[；;]|、/)
+    .map((item) => clean(item).replace(/^[-*]\s*/, ""))
+    .filter(Boolean);
+  return items.length ? Array.from(new Set(items)).slice(0, 12) : fallback;
+}
+
+function calculateLectureSlideTarget(minutes, slidesPerHour) {
+  return clamp(Math.round((Number(minutes) || 60) / 60 * (Number(slidesPerHour) || 12)), 6, 80);
+}
+
+function updateAnnualLectureFromCard(index) {
+  const plan = state.annualPlan;
+  const unit = plan?.lectureUnits?.[index];
+  if (!plan || !unit) return;
+  const titleInput = dom.annualLecturePlan.querySelector(`[data-lecture-title="${index}"]`);
+  const subtopicsInput = dom.annualLecturePlan.querySelector(`[data-lecture-subtopics="${index}"]`);
+  const minutesInput = dom.annualLecturePlan.querySelector(`[data-lecture-minutes="${index}"]`);
+  const title = clean(titleInput?.value) || unit.title;
+  const minutes = clamp(Number(minutesInput?.value) || unit.videoMinutes || 60, 10, 360);
+  const subtopics = normalizeLectureSubtopics(subtopicsInput?.value, unit.subtopics || []);
+
+  unit.title = title;
+  unit.subtopics = subtopics;
+  unit.videoMinutes = minutes;
+  unit.hours = roundOne(minutes / 60);
+  unit.pptSlides = calculateLectureSlideTarget(minutes, plan.inputs.slidesPerHour);
+  updateLectureDerivedFields(unit, plan.inputs, index);
+  recalculateAnnualMetrics(plan);
+  syncAnnualLectureTimetable(plan);
+  logAudit("Lecture/PPT 編輯", `${unit.id} 已更新：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("Lecture/PPT 清單編輯");
+  persistState();
+}
+
+function updateLectureDerivedFields(unit, inputs, index) {
+  const focus = inferLectureFocus(unit.title);
+  const templateId = inferLectureTemplateId(unit.title, unit.pptSlides);
+  const resourceProfile = inferResourceProfile(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.resourceConstraints);
+  const officialAlignment = inferOfficialAlignment(`${unit.title} ${unit.subtopics.join(" ")}`, inputs.officialRefs);
+  unit.focus = focus;
+  unit.templateId = templateId;
+  unit.deckName = `Deck ${unit.number || index + 1}: ${unit.title}`;
+  unit.recordingCue = `${unit.videoMinutes} 分鐘教學，建議拆成 ${Math.max(2, Math.ceil(unit.videoMinutes / 20))} 段：概念、demo、checkpoint、lab bridge。`;
+  unit.outcomes = [
+    `學生能說明 ${focus.core} 的用途、限制與適用情境。`,
+    `學生能完成與「${unit.subtopics[0] || focus.task}」相關的可驗收實作。`,
+    "學生能用證據說明成功、失敗與修正方向。",
+  ];
+  unit.pptFocus = [
+    "大題目與子題目拆解",
+    "逐頁 slide purpose / visible text / speaker notes",
+    "Demo、checkpoint、Lab bridge 與 QA gate",
+    "Accessibility 與版本 metadata",
+  ];
+  unit.metadata = {
+    ...(unit.metadata || {}),
+    course_id: slugifyFilename(inputs.moduleTitle || "course").replace(/\.pptx$/i, ""),
+    course_title: inputs.moduleTitle,
+    lecture_id: unit.id || `L${index + 1}`,
+    module_id: inferModuleId(unit.title, index),
+    duration_minutes: unit.videoMinutes,
+    slide_target: unit.pptSlides,
+    template_id: templateId,
+    difficulty: inferDifficulty(unit.title),
+    prerequisites: index === 0 ? ["未指定"] : [`L${index}`],
+    resource_profile: resourceProfile,
+    official_alignment: officialAlignment,
+    locale: "zh-TW",
+    version: unit.metadata?.version || "0.1.0",
+    model_name: state.ai?.model || "local-rule",
+    prompt_hash: `local:${hashString(`${inputs.moduleTitle}|${unit.title}|${unit.subtopics.join("|")}|${unit.videoMinutes}|${unit.pptSlides}`)}`,
+    source_snapshot_id: buildSourceSnapshotId(inputs.officialRefs),
+    review_status: "draft",
+  };
+  unit.slideSpec = buildLectureSlideSpec(unit.title, unit.pptSlides, unit.subtopics);
+  unit.pptxChecklist = buildPptxGenerationChecklist({
+    topic: unit.title,
+    subtopics: unit.subtopics,
+    slideTarget: unit.pptSlides,
+    minutes: unit.videoMinutes,
+    templateId,
+    focus,
+    resourceProfile,
+    officialAlignment,
+  });
+  unit.qaChecklist = buildLectureQaChecklist();
+}
+
+function recalculateAnnualMetrics(plan) {
+  const lectureHours = roundOne((plan.lectureUnits || []).reduce((sum, unit) => sum + Number(unit.hours || 0), 0));
+  const pptSlides = (plan.lectureUnits || []).reduce((sum, unit) => sum + Number(unit.pptSlides || 0), 0);
+  plan.metrics.lectureHours = lectureHours;
+  plan.metrics.pptSlides = pptSlides;
+  plan.metrics.lectureUnits = plan.lectureUnits?.length || 0;
+  plan.metrics.recordingHours = lectureHours;
+  plan.metrics.totalHours = roundOne(lectureHours + Number(plan.metrics.labHours || 0) + Number(plan.metrics.assessmentHours || 0));
+  plan.inputs.lectureHours = lectureHours;
+  if (dom.annualLectureHours) dom.annualLectureHours.value = String(lectureHours);
+}
+
+function syncAnnualLectureTimetable(plan) {
+  (plan.lectureUnits || []).forEach((unit) => {
+    const row = (plan.timetable || []).find((item) => item.type === "Lecture/PPT" && item.id === unit.id);
+    if (!row) return;
+    row.week = unit.week;
+    row.title = unit.title;
+    row.hours = unit.hours;
+    row.output = `${unit.deckName} / ${unit.pptSlides} slides / ${unit.videoMinutes} min video`;
+    row.dependency = unit.metadata?.prerequisites?.join("、") || "依週次清單排序";
+  });
 }
 
 function buildTimetableFromWeeklyItems({ weeklyItems, lectureUnits, labs, assessments, inputs }) {
@@ -1087,15 +1234,61 @@ function buildSourceSnapshotId(refs = []) {
   return `src-${stamp}-${signature}`;
 }
 
-function buildLectureSlideSpec(topic, slideTarget) {
+function buildLectureSlideSpec(topic, slideTarget, subtopics = []) {
   const sections = PROFESSIONAL_COURSE_STANDARD.slideSections;
-  return sections.map((section, index) => ({
-    slide_no: index + 1,
-    section,
-    purpose: `${topic}：${section}`,
-    renderer_hint: index === 6 ? "demo command / YAML walkthrough" : index === 8 ? "misconception matrix" : "clear 16:9 teaching slide",
-    required_notes: index >= 6 ? "speaker notes must include answer key, checkpoint, and fallback" : "speaker notes must connect to learning objective",
-    repeatsEveryHour: slideTarget > sections.length,
+  const count = clamp(Number(slideTarget) || sections.length, 6, 80);
+  return Array.from({ length: count }, (_, index) => {
+    const section = sections[index % sections.length];
+    const subtopic = subtopics[index % Math.max(1, subtopics.length)] || topic;
+    return {
+      slide_no: index + 1,
+      section,
+      subtopic,
+      purpose: `${topic}｜${subtopic}｜${section}`,
+      renderer_hint: section.includes("Demo") ? "demo command / YAML walkthrough" : section.includes("錯誤") ? "misconception matrix" : "clear 16:9 teaching slide",
+      required_notes: index >= 6 ? "speaker notes must include answer key, checkpoint, and fallback" : "speaker notes must connect to learning objective",
+      repeatsEveryHour: count > sections.length,
+    };
+  });
+}
+
+function buildPptxGenerationChecklist({ topic, subtopics, slideTarget, minutes, templateId, focus, resourceProfile, officialAlignment }) {
+  const resolvedFocus = focus || inferLectureFocus(topic);
+  const slideSpec = buildLectureSlideSpec(topic, slideTarget, subtopics);
+  const minutesPerSlide = Math.max(1, Math.round((Number(minutes) || 60) / Math.max(1, slideSpec.length)));
+  return slideSpec.map((slide) => ({
+    slide_no: slide.slide_no,
+    title: `${slide.slide_no}. ${slide.section}`,
+    big_topic: topic,
+    subtopic: slide.subtopic,
+    teaching_minutes: minutesPerSlide,
+    template_id: templateId,
+    visible_text: [
+      `${slide.subtopic} 的核心概念`,
+      `本頁要學生完成的判斷：${resolvedFocus.task}`,
+      "成功證據：能說出原因、步驟與驗收方式",
+    ],
+    visual_direction: slide.section.includes("Demo")
+      ? "左側命令 / YAML，右側預期輸出與檢查點"
+      : slide.section.includes("錯誤")
+        ? "常見錯誤對照表：症狀、原因、修正、驗收"
+        : "流程圖、概念地圖或 checklist，避免純文字塞滿",
+    speaker_notes: [
+      `用 ${minutesPerSlide} 分鐘講清楚本頁與「${topic}」的關係。`,
+      `先講情境，再講 ${slide.subtopic}，最後用一個問題檢查學生是否能應用。`,
+      "保留 answer key、fallback demo path 與下一頁轉場。",
+    ],
+    lab_bridge: slide.slide_no === slideSpec.length
+      ? "收束到下一個 Lab / Assessment deliverable，明確說出學生要交甚麼證據。"
+      : "指出本頁如何支援後續 Lab 或 checkpoint。",
+    qa_gate: [
+      "唯一 slide title",
+      "visible text 不超過 4 bullets",
+      "speaker notes 包含答案鍵",
+      "alt text / reading order 可檢查",
+    ],
+    resource_profile: resourceProfile,
+    official_alignment: officialAlignment,
   }));
 }
 
@@ -1684,7 +1877,24 @@ function renderAnnualPlan() {
           <span>${escapeHtml(unit.id)}｜Week ${unit.week}｜${unit.hours}h｜${unit.pptSlides} slides</span>
           <strong>${escapeHtml(unit.title)}</strong>
         </div>
-        <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT 流程</button>
+        <div class="card-actions">
+          <button class="action-button ghost" type="button" data-lecture-refresh="${index}" ${canEditAnnual ? "" : "disabled"}>更新清單</button>
+          <button class="action-button ghost" type="button" data-annual-lecture="${index}" ${canEditAnnual ? "" : "disabled"}>送到 PPT 流程</button>
+        </div>
+      </div>
+      <div class="lecture-edit-grid">
+        <label>
+          大題目
+          <input type="text" data-lecture-title="${index}" value="${escapeHtml(unit.title)}" ${canEditAnnual ? "" : "disabled"} />
+        </label>
+        <label>
+          教學時間（分鐘）
+          <input type="number" min="10" max="360" step="5" data-lecture-minutes="${index}" value="${escapeHtml(unit.videoMinutes || Math.round((unit.hours || 1) * 60))}" ${canEditAnnual ? "" : "disabled"} />
+        </label>
+        <label class="wide-field">
+          子題目
+          <textarea rows="3" data-lecture-subtopics="${index}" ${canEditAnnual ? "" : "disabled"}>${escapeHtml((unit.subtopics?.length ? unit.subtopics : inferLectureSubtopics(unit.title, null, unit.focus || inferLectureFocus(unit.title))).join("\n"))}</textarea>
+        </label>
       </div>
       <p>${escapeHtml(unit.recordingCue)}</p>
       <div class="spec-chip-row">
@@ -1697,6 +1907,7 @@ function renderAnnualPlan() {
       <small>PPT spec：${escapeHtml((unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → "))}${unit.slideSpec?.length > 4 ? "..." : ""}</small>
       <small>QA：${escapeHtml((unit.qaChecklist || []).slice(0, 3).join("；"))}</small>
       <small>${escapeHtml(unit.duplicateCleanup)}</small>
+      ${renderLecturePptxChecklist(unit)}
     </article>
   `).join("");
 
@@ -1738,6 +1949,15 @@ function renderAnnualPlan() {
   dom.annualLecturePlan.querySelectorAll("[data-annual-lecture]").forEach((button) => {
     button.addEventListener("click", () => sendAnnualLectureToBuilder(Number(button.dataset.annualLecture)));
   });
+  dom.annualLecturePlan.querySelectorAll("[data-lecture-refresh]").forEach((button) => {
+    button.addEventListener("click", () => updateAnnualLectureFromCard(Number(button.dataset.lectureRefresh)));
+  });
+  dom.annualLecturePlan.querySelectorAll("[data-lecture-title], [data-lecture-minutes], [data-lecture-subtopics]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const index = Number(input.dataset.lectureTitle ?? input.dataset.lectureMinutes ?? input.dataset.lectureSubtopics);
+      updateAnnualLectureFromCard(index);
+    });
+  });
   dom.annualLabPlan.querySelectorAll("[data-lab-content]").forEach((button) => {
     button.addEventListener("click", () => generateLabContent(Number(button.dataset.labContent)));
   });
@@ -1748,6 +1968,55 @@ function renderAnnualPlan() {
 
 function annualMetric(label, value, hint) {
   return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(hint)}</small></div>`;
+}
+
+function renderLecturePptxChecklist(unit) {
+  const checklist = getLecturePptxChecklist(unit);
+  return `
+    <details class="pptx-checklist">
+      <summary>專業 PPTX 生成清單｜${escapeHtml(checklist.length)} slides</summary>
+      <div class="pptx-checklist-grid">
+        ${checklist.map((slide) => `
+          <section class="pptx-slide-row">
+            <div>
+              <span>S${escapeHtml(slide.slide_no)}｜${escapeHtml(slide.teaching_minutes)} min｜${escapeHtml(slide.template_id)}</span>
+              <strong>${escapeHtml(slide.title)}</strong>
+              <small>大題目：${escapeHtml(slide.big_topic)}</small>
+              <small>子題目：${escapeHtml(slide.subtopic)}</small>
+            </div>
+            <div>
+              <span>Visible Text</span>
+              <ul>${(slide.visible_text || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+            </div>
+            <div>
+              <span>Visual / Notes / QA</span>
+              <p>${escapeHtml(slide.visual_direction)}</p>
+              <small>${escapeHtml((slide.speaker_notes || []).join(" "))}</small>
+              <small>QA：${escapeHtml((slide.qa_gate || []).join("；"))}</small>
+            </div>
+          </section>
+        `).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function getLecturePptxChecklist(unit) {
+  if (Array.isArray(unit.pptxChecklist) && unit.pptxChecklist.length === Number(unit.pptSlides || unit.pptxChecklist.length)) {
+    return unit.pptxChecklist;
+  }
+  const focus = unit.focus || inferLectureFocus(unit.title);
+  const subtopics = unit.subtopics?.length ? unit.subtopics : inferLectureSubtopics(unit.title, null, focus);
+  return buildPptxGenerationChecklist({
+    topic: unit.title,
+    subtopics,
+    slideTarget: unit.pptSlides || unit.slideSpec?.length || 10,
+    minutes: unit.videoMinutes || Math.round((unit.hours || 1) * 60),
+    templateId: unit.templateId || unit.metadata?.template_id || "LT-CORE",
+    focus,
+    resourceProfile: unit.metadata?.resource_profile || ["未指定"],
+    officialAlignment: unit.metadata?.official_alignment || ["未指定"],
+  });
 }
 
 function renderProfessionalStandard(plan) {
@@ -2417,7 +2686,9 @@ async function sendAnnualLectureToBuilder(index) {
       `PPT deck：${unit.deckName}`,
       `Template：${unit.templateId || unit.metadata?.template_id || "LT-CORE"}`,
       `PPT focus：${unit.pptFocus.join("、")}`,
+      `Subtopics：${(unit.subtopics || []).join("、")}`,
       `Metadata：${JSON.stringify(unit.metadata || {}, null, 2)}`,
+      `Detailed PPTX checklist：${JSON.stringify(getLecturePptxChecklist(unit), null, 2)}`,
       `QA checklist：${(unit.qaChecklist || []).join("；")}`,
       `Duplicate cleanup：${unit.duplicateCleanup}`,
     ].filter(Boolean).join("\n"),
@@ -5330,6 +5601,12 @@ ${unit.outcomes.map((item) => `  - ${item}`).join("\n")}
 - PPT focus：${unit.pptFocus.join("、")}
 - PPT slide spec：
 ${(unit.slideSpec || []).map((item) => `  - S${item.slide_no} ${item.section}：${item.purpose}`).join("\n")}
+- 專業 PPTX 生成清單：
+${getLecturePptxChecklist(unit).map((slide) => `  - S${slide.slide_no} ${slide.title}｜大題目：${slide.big_topic}｜子題目：${slide.subtopic}｜${slide.teaching_minutes} min
+    - Visible text：${slide.visible_text.join("；")}
+    - Visual：${slide.visual_direction}
+    - Speaker notes：${slide.speaker_notes.join(" ")}
+    - QA：${slide.qa_gate.join("；")}`).join("\n")}
 - QA checklist：
 ${(unit.qaChecklist || []).map((item) => `  - ${item}`).join("\n")}
 - Dedup：${unit.duplicateCleanup}`).join("\n\n");

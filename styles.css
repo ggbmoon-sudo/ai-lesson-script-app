@@ -885,6 +885,13 @@ legend {
   gap: 12px;
 }
 
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .annual-card strong,
 .annual-card span,
 .annual-card small {
@@ -906,6 +913,44 @@ legend {
 
 .annual-card ul {
   padding-left: 20px;
+}
+
+.lecture-edit-grid {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5faf8;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 170px;
+  gap: 10px;
+  padding: 10px;
+}
+
+.lecture-edit-grid label {
+  color: var(--muted);
+  display: grid;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.lecture-edit-grid input,
+.lecture-edit-grid textarea {
+  background: white;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  min-width: 0;
+  padding: 9px 10px;
+  width: 100%;
+}
+
+.lecture-edit-grid textarea {
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.lecture-edit-grid .wide-field {
+  grid-column: 1 / -1;
 }
 
 .spec-chip-row {
@@ -995,6 +1040,54 @@ legend {
 
 .type-chip.buffer {
   background: var(--violet);
+}
+
+.pptx-checklist {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffef9;
+  padding: 10px;
+}
+
+.pptx-checklist summary {
+  color: var(--teal-dark);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.pptx-checklist-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pptx-slide-row {
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(220px, 1fr) minmax(260px, 1.2fr);
+  gap: 10px;
+  padding-top: 8px;
+}
+
+.pptx-slide-row strong,
+.pptx-slide-row span,
+.pptx-slide-row small {
+  display: block;
+}
+
+.pptx-slide-row span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.pptx-slide-row ul,
+.pptx-slide-row p {
+  margin: 4px 0 0;
+}
+
+.pptx-slide-row ul {
+  padding-left: 18px;
 }
 
 .script-editor {
@@ -1623,5 +1716,14 @@ legend {
   .annual-card-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .card-actions {
+    justify-content: stretch;
+  }
+
+  .lecture-edit-grid,
+  .pptx-slide-row {
+    grid-template-columns: 1fr;
   }
 }
