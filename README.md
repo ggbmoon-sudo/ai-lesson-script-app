@@ -91,6 +91,8 @@ curl "http://localhost:4173/api/ai/diagnostics?live=1"
 
 `OPENAI_COMPAT_MODEL` 可改為 `qwen3.5-plus`。若 provider 的 endpoint 已包含 `/v1/chat/completions`，可用 `OPENAI_COMPAT_CHAT_URL` 明確指定完整 URL。`OPENAI_COMPAT_DISABLE_THINKING=true` 會預設要求 Qwen 類模型不要把 thinking / reasoning 放入 JSON 任務；若 provider 需要額外 request 欄位，可用 `OPENAI_COMPAT_EXTRA_BODY` 放 JSON object。
 
+Lecture/PPT「更新中間內容」會先嘗試一次完整 summary 生成；如果 OpenAI-compatible provider 把輸出消耗在 thinking 而沒有回傳 final JSON，server 會自動改用分段 AI 生成，分別處理 core、outcomes、PPT/QA design，再合併成同一個 summary 回 APP。
+
 講稿生成流程已改為兩階段：先把 PPTX 解析成乾淨的 `slide_json`，每頁保留 `slide_no`、`slide_title`、`slide_subtitle`、`slide_body`、`visual_description`、`speaker_notes`、`source_type` 與 `extracted_from`；再把完整 `slide_json`、課程資訊、訪談資料、學習目標、對象、時長與風格交給 AI provider 生成逐頁教師口語講稿。APP 會避免把 PPT Prompt、compiler prompt、debug log 或版本紀錄混入正式講稿。
 
 AI 狀態燈會顯示目前 model、base URL、temperature 與 max tokens。

@@ -237,6 +237,40 @@ const lecturePptxSummarySchema = {
   },
 };
 
+const lecturePptxSummaryCoreSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "subtopics", "teachingMinutes", "slideTarget", "templateId"],
+  properties: {
+    title: { type: "string" },
+    subtopics: stringArraySchema,
+    teachingMinutes: { type: "number" },
+    slideTarget: { type: "number" },
+    templateId: { type: "string" },
+  },
+};
+
+const lecturePptxSummaryOutcomesSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["outcomes"],
+  properties: {
+    outcomes: stringArraySchema,
+  },
+};
+
+const lecturePptxSummaryDesignSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pptFocus", "recordingCue", "duplicateCleanup", "qaChecklist"],
+  properties: {
+    pptFocus: stringArraySchema,
+    recordingCue: { type: "string" },
+    duplicateCleanup: { type: "string" },
+    qaChecklist: stringArraySchema,
+  },
+};
+
 const lecturePptxChecklistChunkSchema = {
   type: "object",
   additionalProperties: false,
@@ -563,12 +597,7 @@ async function handleAiRequest(req, res, pathname) {
   }
 
   if (pathname === "/api/ai/lecture-pptx-summary") {
-    const result = await createStructuredResponse({
-      provider,
-      schemaName: "lecture_pptx_summary",
-      schema: lecturePptxSummarySchema,
-      input: buildLecturePptxSummaryPrompt(body),
-    });
+    const result = await createLecturePptxSummaryResponse(provider, body);
     return sendJson(res, 200, result);
   }
 
@@ -1499,6 +1528,58 @@ async function createStructuredResponse({ provider, schemaName, schema, input })
   throw new Error(`Unsupported AI provider: ${provider.name}`);
 }
 
+async function createLecturePptxSummaryResponse(provider, body) {
+  try {
+    return await createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_summary",
+      schema: lecturePptxSummarySchema,
+      input: buildLecturePptxSummaryPrompt(body),
+    });
+  } catch (error) {
+    if (provider.name !== "openai-compatible" || !shouldUseChunkedLecturePptxSummary(error)) {
+      throw error;
+    }
+    return createChunkedLecturePptxSummary(provider, body);
+  }
+}
+
+async function createChunkedLecturePptxSummary(provider, body) {
+  const context = buildLecturePptxSummaryContext(body);
+  const [core, outcomes, design] = await Promise.all([
+    createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_summary_core",
+      schema: lecturePptxSummaryCoreSchema,
+      input: buildLecturePptxSummaryChunkPrompt(context, "core"),
+    }),
+    createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_summary_outcomes",
+      schema: lecturePptxSummaryOutcomesSchema,
+      input: buildLecturePptxSummaryChunkPrompt(context, "outcomes"),
+    }),
+    createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_summary_design",
+      schema: lecturePptxSummaryDesignSchema,
+      input: buildLecturePptxSummaryChunkPrompt(context, "design"),
+    }),
+  ]);
+
+  return normalizeLecturePptxSummaryResult({
+    ...core,
+    ...outcomes,
+    ...design,
+  }, body);
+}
+
+function shouldUseChunkedLecturePptxSummary(error) {
+  return /Thinking Process|finish_reason=length|reasoning=present|content=empty|not valid JSON|did not include message content/i.test(
+    String(error?.message || ""),
+  );
+}
+
 async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {
   const endpoint = getOpenAiCompatibleChatEndpoint();
   const maxTokens = getOpenAiCompatibleMaxTokens(schemaName);
@@ -1609,7 +1690,10 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
     ai_diagnostics: 256,
     student_grounded_qa: 1024,
     slide_revision: 2048,
-    lecture_pptx_summary: 1024,
+    lecture_pptx_summary: 4096,
+    lecture_pptx_summary_core: 1024,
+    lecture_pptx_summary_outcomes: 1024,
+    lecture_pptx_summary_design: 1536,
     lecture_pptx_checklist_chunk: 4096,
     lesson_plan: 4096,
     lab_content_markdown: 4096,
@@ -1628,7 +1712,10 @@ function getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens) {
     ai_diagnostics: 128,
     student_grounded_qa: 768,
     slide_revision: 1024,
-    lecture_pptx_summary: 768,
+    lecture_pptx_summary: 4096,
+    lecture_pptx_summary_core: 768,
+    lecture_pptx_summary_outcomes: 768,
+    lecture_pptx_summary_design: 1024,
     lecture_pptx_checklist_chunk: 2048,
     lesson_plan: 2048,
     lab_content_markdown: 2048,
@@ -1817,13 +1904,13 @@ function extractOpenAiCompatibleText(payload) {
   collectOpenAiCompatibleTextCandidate(candidates, payload?.content);
   collectOpenAiCompatibleTextCandidate(reasoningCandidates, payload?.reasoning_content);
 
-  const jsonCandidate = candidates.find(looksLikeJsonText);
+  const jsonCandidate = candidates.map(extractEmbeddedJsonText).find(Boolean);
   if (jsonCandidate) return jsonCandidate.trim();
 
-  const textCandidate = candidates.find((candidate) => candidate.trim());
+  const textCandidate = candidates.find((candidate) => candidate.trim() && !isLikelyThinkingText(candidate));
   if (textCandidate) return textCandidate.trim();
 
-  const reasoningJsonCandidate = reasoningCandidates.find(looksLikeJsonText);
+  const reasoningJsonCandidate = reasoningCandidates.map(extractEmbeddedJsonText).find(Boolean);
   return reasoningJsonCandidate ? reasoningJsonCandidate.trim() : "";
 }
 
@@ -1851,7 +1938,30 @@ function openAiCompatibleContentToText(value) {
 }
 
 function looksLikeJsonText(value) {
-  return /[{\[]/.test(String(value || ""));
+  return /^\s*(?:```(?:json)?\s*)?[{\[]/.test(String(value || ""));
+}
+
+function extractEmbeddedJsonText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced && looksLikeJsonText(fenced[1])) return fenced[1].trim();
+  if (looksLikeJsonText(text)) return text;
+
+  const objectStart = text.lastIndexOf("{");
+  const objectEnd = text.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    const prefix = text.slice(Math.max(0, objectStart - 100), objectStart);
+    if (/final|answer|json|result|output|輸出|答案|結果/i.test(prefix)) {
+      return text.slice(objectStart, objectEnd + 1).trim();
+    }
+  }
+
+  return "";
+}
+
+function isLikelyThinkingText(value) {
+  return /^\s*(Thinking Process|We need|I need|Let me|Okay|首先|我需要|思考)/i.test(String(value || ""));
 }
 
 function summarizeOpenAiCompatiblePayload(payload) {
@@ -1950,7 +2060,8 @@ ${JSON.stringify(unit || {}, null, 2)}`;
 }
 
 function buildLecturePptxSummaryPrompt({ unit, inputs }) {
-  return `你是專業課程架構師與 PPTX 教學設計師。請快速重新生成這個 Lecture 的核心教學結構，只輸出 summary 欄位，不要輸出逐頁 checklist。
+  const context = buildLecturePptxSummaryContext({ unit, inputs });
+  return `你是專業課程架構師與 PPTX 教學設計師。請重新生成這個 Lecture 的核心教學結構，只輸出 summary 欄位，不要輸出逐頁 checklist。
 
 必須做到：
 1. 以使用者最新大題目、子題目、教學時間、slideTarget 為準。
@@ -1962,12 +2073,121 @@ function buildLecturePptxSummaryPrompt({ unit, inputs }) {
 7. 不可保留與新大題目無關的 Kubernetes / CKA / CKAD 內容，除非使用者輸入明確要求。
 8. 若 Lecture 最新資料包含 feedback，必須把教師意見落實到 outcomes、pptFocus、recordingCue、duplicateCleanup 與 qaChecklist。
 9. 使用繁體中文；技術命令、產品名可保留英文。
+10. 這是中間內容更新，不要生成逐頁 PPTX 清單。
 
-課程輸入：
-${JSON.stringify(inputs || {}, null, 2)}
+精簡但完整的上下文：
+${renderLecturePptxSummaryContext(context)}`;
+}
 
-Lecture 最新資料：
-${JSON.stringify(unit || {}, null, 2)}`;
+function buildLecturePptxSummaryChunkPrompt(context, chunk) {
+  const chunkRules = {
+    core: [
+      "只輸出 title、subtopics、teachingMinutes、slideTarget、templateId。",
+      "title/subtopics 必須以使用者最新輸入為準，只做專業化整理，不要換題。",
+      "teachingMinutes 與 slideTarget 必須保留原本數字，除非明顯缺漏。",
+    ],
+    outcomes: [
+      "只輸出 outcomes。",
+      "生成 4-6 條可觀察、可評核、對齊題目和子題目的學習成果。",
+      "每條 outcomes 要包含學生能做什麼、用什麼工具或情境、產出或判斷標準。",
+    ],
+    design: [
+      "只輸出 pptFocus、recordingCue、duplicateCleanup、qaChecklist。",
+      "pptFocus 要覆蓋概念、demo、checkpoint、troubleshooting、lab bridge。",
+      "recordingCue 要按 teachingMinutes 分段，列出時間碼與教學用途。",
+      "qaChecklist 要阻擋錯 topic、錯 duration、缺 teaching purpose、缺 demo/lab bridge。",
+    ],
+  };
+
+  return `你是專業課程架構師與 PPTX 教學設計師。這是分段生成任務，請只處理 ${chunk} 區塊。
+
+分段規則：
+${chunkRules[chunk].map((item, index) => `${index + 1}. ${item}`).join("\n")}
+
+共同標準：
+1. 以 latest.title、latest.subtopics、latest.teachingMinutes、latest.slideTarget、teacherFeedback 為最高優先。
+2. existingMiddle 只作參考；若與 latest 衝突，必須改寫，不可沿用舊 topic。
+3. 不可保留與最新題目無關的 Kubernetes / CKA / CKAD 內容，除非 latest 或 teacherFeedback 明確要求。
+4. 使用繁體中文；技術命令、產品名可保留英文。
+5. 不要生成逐頁 PPTX 清單。
+
+精簡但完整的上下文：
+${renderLecturePptxSummaryContext(context)}`;
+}
+
+function buildLecturePptxSummaryContext({ unit, inputs }) {
+  const teachingMinutes = normalizePositiveInteger(unit?.teachingMinutes || unit?.videoMinutes) || 60;
+  const slideTarget = normalizePositiveInteger(unit?.slideTarget || unit?.pptSlides) || Math.max(8, Math.round(teachingMinutes / 4));
+  return {
+    course: {
+      moduleTitle: limitText(inputs?.moduleTitle, 120),
+      audience: limitText(inputs?.audience, 160),
+      context: limitText(inputs?.context, 500),
+      slidesPerHour: inputs?.slidesPerHour || "",
+      resourceConstraints: limitTextList(inputs?.resourceConstraints, 8, 120),
+      officialRefs: limitTextList(inputs?.officialRefs, 6, 160),
+    },
+    latest: {
+      id: unit?.id || "",
+      number: unit?.number || "",
+      week: unit?.week || "",
+      title: limitText(unit?.title, 160),
+      subtopics: limitTextList(unit?.subtopics, 10, 160),
+      teachingMinutes,
+      slideTarget,
+      templateId: limitText(unit?.templateId, 80),
+      moduleId: limitText(unit?.moduleId, 80),
+      difficulty: limitText(unit?.difficulty, 80),
+      resourceProfile: limitTextList(unit?.resourceProfile, 8, 120),
+      officialAlignment: limitTextList(unit?.officialAlignment, 8, 160),
+    },
+    existingMiddle: {
+      outcomes: limitTextList(unit?.outcomes, 8, 180),
+      pptFocus: limitTextList(unit?.pptFocus, 8, 180),
+      recordingCue: limitText(unit?.recordingCue, 400),
+      duplicateCleanup: limitText(unit?.duplicateCleanup, 300),
+      qaChecklist: limitTextList(unit?.qaChecklist, 8, 180),
+    },
+    teacherFeedback: limitText(unit?.feedback || unit?.aiFeedback, 500),
+    outputContract: {
+      summaryOnly: true,
+      noPptxChecklistYet: true,
+      confirmBeforePptFlow: true,
+    },
+  };
+}
+
+function renderLecturePptxSummaryContext(context) {
+  return JSON.stringify(context, null, 2);
+}
+
+function normalizeLecturePptxSummaryResult(result, body) {
+  const context = buildLecturePptxSummaryContext(body || {});
+  return {
+    title: result?.title || context.latest.title,
+    subtopics: Array.isArray(result?.subtopics) && result.subtopics.length ? result.subtopics : context.latest.subtopics,
+    teachingMinutes: Number(result?.teachingMinutes) || context.latest.teachingMinutes,
+    slideTarget: Number(result?.slideTarget) || context.latest.slideTarget,
+    templateId: result?.templateId || context.latest.templateId || "LT-CORE",
+    outcomes: Array.isArray(result?.outcomes) ? result.outcomes : [],
+    pptFocus: Array.isArray(result?.pptFocus) ? result.pptFocus : [],
+    recordingCue: result?.recordingCue || "",
+    duplicateCleanup: result?.duplicateCleanup || "",
+    qaChecklist: Array.isArray(result?.qaChecklist) ? result.qaChecklist : [],
+  };
+}
+
+function limitText(value, maxLength = 300) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function limitTextList(value, maxItems = 8, maxLength = 160) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/\r?\n|[;；]/);
+  return items
+    .map((item) => limitText(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
 }
 
 function buildLecturePptxChecklistPrompt({ unit, inputs, startSlide, endSlide }) {
@@ -2336,6 +2556,9 @@ function getGeminiMaxOutputTokens(schemaName) {
     student_grounded_qa: 1024,
     slide_revision: 2048,
     lecture_pptx_summary: 2048,
+    lecture_pptx_summary_core: 1024,
+    lecture_pptx_summary_outcomes: 1024,
+    lecture_pptx_summary_design: 1536,
     lecture_pptx_checklist_chunk: 4096,
     lesson_plan: 4096,
     lab_content_markdown: 4096,
@@ -2463,7 +2686,7 @@ async function buildAiDiagnostics({ live = false, source = "", errorMessage = ""
       name: "token policy",
       ok: true,
       detail: `default=${OPENAI_COMPAT_MAX_TOKENS}, script=${OPENAI_COMPAT_SCRIPT_MAX_TOKENS}, schema caps enabled, disableThinking=${OPENAI_COMPAT_DISABLE_THINKING}`,
-      hint: "Short AI jobs stay <=4096 tokens; long AI jobs use streaming when needed. Qwen thinking is disabled for JSON jobs by default.",
+      hint: "Short AI jobs stay <=4096 tokens; long AI jobs use streaming when needed. Qwen thinking is disabled; Lecture/PPT summary can fall back to chunked AI generation.",
     },
     {
       name: "openai-compatible extra body",
@@ -2508,14 +2731,14 @@ function buildAiErrorHint(message) {
   if (/401|unauthorized|api key|forbidden|403/i.test(value)) {
     return "Check OPENAI_COMPAT_API_KEY and the secret visibility for this Codespace.";
   }
-  if (/model|404/i.test(value)) {
-    return "Check OPENAI_COMPAT_MODEL and base URL.";
-  }
   if (/did not include message content|content=empty|reasoning=present|blank content/i.test(value)) {
-    return "Provider returned no final JSON content. Pull latest/restart; Qwen thinking is disabled and the app will retry compact JSON.";
+    return "Provider spent the response on thinking instead of final JSON. Pull latest/restart; Lecture/PPT summary now falls back to chunked AI generation.";
   }
   if (/json|parse|did not include/i.test(value)) {
     return "The model returned invalid JSON. Pull latest/restart; the app will retry compact JSON with schema caps.";
+  }
+  if (/\bmodel\b|404/i.test(value)) {
+    return "Check OPENAI_COMPAT_MODEL and base URL.";
   }
   if (/rate limit|quota|429/i.test(value)) {
     return "The provider is rate limited or out of quota. Wait or switch model/provider.";
