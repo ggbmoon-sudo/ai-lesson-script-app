@@ -11,12 +11,13 @@ This app is best deployed as a Node web service, not as GitHub Pages. GitHub Pag
 5. Add environment variables in Render:
 
 ```text
-AI_PROVIDER=auto
-OPENAI_API_KEY=your_openai_key_if_you_want_server_ai
-OPENAI_MODEL=gpt-5.2
-GEMINI_API_KEY=your_gemini_key_if_you_want_server_ai
-GEMINI_MODEL=gemini-3-pro-preview
-GEMINI_THINKING_LEVEL=high
+AI_PROVIDER=openai-compatible
+OPENAI_COMPAT_BASE_URL=https://api.newcoin.top
+OPENAI_COMPAT_API_KEY=your_newcoin_key
+OPENAI_COMPAT_MODEL=qwen3.6-plus
+OPENAI_COMPAT_TEMPERATURE=0.25
+OPENAI_COMPAT_MAX_TOKENS=16384
+OPENAI_COMPAT_SCRIPT_MAX_TOKENS=32768
 GOOGLE_DRIVE_CLIENT_ID=your_google_oauth_client_id.apps.googleusercontent.com
 GAMMA_API_KEY=your_gamma_api_key_if_you_want_gamma_ppt_export
 GAMMA_EXPORT_AS=pptx
@@ -24,8 +25,7 @@ GAMMA_TEXT_MODE=generate
 PUBLIC_BASE_URL=https://your-service-name.onrender.com
 ```
 
-`OPENAI_API_KEY` and `GEMINI_API_KEY` are optional. Use `AI_PROVIDER=gemini` to force Gemini, `AI_PROVIDER=openai` to force OpenAI, or `AI_PROVIDER=auto` to use OpenAI first and Gemini second. If both keys are empty, the frontend falls back to local rule-based generation.
-Use `gemini-3-pro-preview` with `GEMINI_THINKING_LEVEL=high` for highest-quality lesson scripts. Use `gemini-3-flash-preview` if you prefer lower latency/cost, or `gemini-2.5-flash` with `GEMINI_THINKING_BUDGET=-1` for dynamic thinking on the 2.5 series.
+`OPENAI_COMPAT_API_KEY` is required for AI generation. The app uses OpenAI-compatible chat completions at `OPENAI_COMPAT_BASE_URL`; with NewCoin the server will call `/v1/chat/completions` automatically. `OPENAI_COMPAT_MODEL` can be `qwen3.6-plus` or `qwen3.5-plus`. If no AI key is configured, generation stops with an error rather than using local fallback rules.
 
 `GAMMA_API_KEY` is optional. If it is empty, the `Gamma PPT` button exports a Gamma-ready Markdown prompt instead of calling Gamma. If it is set, `server.js` calls Gamma from the backend so the key is never exposed to the browser.
 

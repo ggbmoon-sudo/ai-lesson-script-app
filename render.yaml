@@ -12,16 +12,12 @@ services:
       - key: NODE_ENV
         value: production
       - key: AI_PROVIDER
-        value: auto
-      - key: OPENAI_MODEL
-        value: gpt-5.2
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: GEMINI_MODEL
-        value: gemini-3-pro-preview
-      - key: GEMINI_THINKING_LEVEL
-        value: high
-      - key: GEMINI_API_KEY
+        value: openai-compatible
+      - key: OPENAI_COMPAT_BASE_URL
+        value: https://api.newcoin.top
+      - key: OPENAI_COMPAT_MODEL
+        value: qwen3.6-plus
+      - key: OPENAI_COMPAT_API_KEY
         sync: false
       - key: GOOGLE_DRIVE_CLIENT_ID
         sync: false

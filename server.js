@@ -8,7 +8,14 @@ loadEnvFile(path.join(__dirname, ".env"));
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
-const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "gemini");
+const AI_PROVIDER = normalizeProvider(process.env.AI_PROVIDER || "openai-compatible");
+const OPENAI_COMPAT_BASE_URL = normalizeBaseUrl(process.env.OPENAI_COMPAT_BASE_URL || process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL || "https://api.newcoin.top");
+const OPENAI_COMPAT_CHAT_URL = process.env.OPENAI_COMPAT_CHAT_URL || "";
+const OPENAI_COMPAT_API_KEY = process.env.OPENAI_COMPAT_API_KEY || process.env.OPENAI_API_KEY || process.env.AI_API_KEY || "";
+const OPENAI_COMPAT_MODEL = process.env.OPENAI_COMPAT_MODEL || process.env.AI_MODEL || "qwen3.6-plus";
+const OPENAI_COMPAT_TEMPERATURE = parseBoundedNumber(process.env.OPENAI_COMPAT_TEMPERATURE, 0.25, 0, 1);
+const OPENAI_COMPAT_MAX_TOKENS = parsePositiveInteger(process.env.OPENAI_COMPAT_MAX_TOKENS, 16384);
+const OPENAI_COMPAT_SCRIPT_MAX_TOKENS = parsePositiveInteger(process.env.OPENAI_COMPAT_SCRIPT_MAX_TOKENS, OPENAI_COMPAT_MAX_TOKENS);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GEMINI_THINKING_LEVEL = normalizeThinkingLevel(process.env.GEMINI_THINKING_LEVEL || "high");
@@ -380,6 +387,14 @@ const server = http.createServer(async (req, res) => {
         configuredProvider: AI_PROVIDER,
         provider: provider?.name || "local",
         model: provider?.model || "",
+        openAiCompatible: provider?.name === "openai-compatible"
+          ? {
+              baseUrl: OPENAI_COMPAT_BASE_URL,
+              temperature: OPENAI_COMPAT_TEMPERATURE,
+              maxTokens: OPENAI_COMPAT_MAX_TOKENS,
+              scriptMaxTokens: OPENAI_COMPAT_SCRIPT_MAX_TOKENS,
+            }
+          : null,
         thinking: provider?.name === "gemini" ? getGeminiThinkingStatus() : null,
         geminiModelTier: provider?.name === "gemini" ? classifyGeminiModel(GEMINI_MODEL) : null,
         geminiGeneration: provider?.name === "gemini"
@@ -390,6 +405,7 @@ const server = http.createServer(async (req, res) => {
             }
           : null,
         availableProviders: {
+          openaiCompatible: Boolean(OPENAI_COMPAT_API_KEY),
           gemini: Boolean(GEMINI_API_KEY),
         },
         environment: process.env.NODE_ENV || "development",
@@ -445,7 +461,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const provider = resolveAiProvider();
-  const mode = provider ? `Gemini enabled (${provider.model})` : "Gemini required but not configured";
+  const mode = provider ? `AI enabled (${provider.name}: ${provider.model})` : "AI provider required but not configured";
   const url = PUBLIC_BASE_URL || `http://localhost:${PORT}`;
   console.log(`EduScript AI Studio running at ${url} - ${mode}`);
 });
@@ -454,7 +470,7 @@ async function handleAiRequest(req, res, pathname) {
   const provider = resolveAiProvider();
   if (!provider) {
     return sendJson(res, 503, {
-      error: "Gemini AI generation is required. Set AI_PROVIDER=gemini and GEMINI_API_KEY, then restart the server.",
+      error: "AI generation is required. Set AI_PROVIDER=openai-compatible, OPENAI_COMPAT_BASE_URL, OPENAI_COMPAT_MODEL and OPENAI_COMPAT_API_KEY, then restart the server.",
     });
   }
 
@@ -1448,10 +1464,90 @@ function themeXml() {
 
 
 async function createStructuredResponse({ provider, schemaName, schema, input }) {
-  if (provider.name !== "gemini") {
-    throw new Error("Gemini AI generation is required for every generation endpoint.");
+  if (provider.name === "gemini") {
+    return createGeminiStructuredResponse({ schemaName, schema, input });
   }
-  return createGeminiStructuredResponse({ schemaName, schema, input });
+  if (provider.name === "openai-compatible") {
+    return createOpenAiCompatibleStructuredResponse({ schemaName, schema, input });
+  }
+  throw new Error(`Unsupported AI provider: ${provider.name}`);
+}
+
+async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {
+  const endpoint = getOpenAiCompatibleChatEndpoint();
+  const maxTokens = schemaName === "lesson_script" ? OPENAI_COMPAT_SCRIPT_MAX_TOKENS : OPENAI_COMPAT_MAX_TOKENS;
+  const requestBody = {
+    model: OPENAI_COMPAT_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: [
+          AI_INSTRUCTIONS,
+          "Return JSON only. Do not include markdown fences, commentary, or keys outside the requested structure.",
+          `Schema name: ${schemaName}`,
+          `JSON schema: ${JSON.stringify(schema)}`,
+        ].join("\n\n"),
+      },
+      { role: "user", content: input },
+    ],
+    temperature: OPENAI_COMPAT_TEMPERATURE,
+    max_tokens: maxTokens,
+    response_format: { type: "json_object" },
+  };
+
+  let payload = await postOpenAiCompatibleChat(endpoint, requestBody);
+  if (payload.retryWithoutResponseFormat) {
+    const fallbackBody = { ...requestBody };
+    delete fallbackBody.response_format;
+    payload = await postOpenAiCompatibleChat(endpoint, fallbackBody);
+  }
+
+  const text = extractOpenAiCompatibleText(payload);
+  if (!text) {
+    throw new Error("OpenAI-compatible response did not include message content.");
+  }
+
+  return parseStructuredJson(text, "OpenAI-compatible");
+}
+
+async function postOpenAiCompatibleChat(endpoint, body) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_COMPAT_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload.error?.message || payload.error?.status || payload.message || response.statusText;
+    if (body.response_format && /response_format|json_schema|json_object|unsupported|not support/i.test(detail)) {
+      return { retryWithoutResponseFormat: true };
+    }
+    throw new Error(`OpenAI-compatible request failed: ${detail}`);
+  }
+  return payload;
+}
+
+function getOpenAiCompatibleChatEndpoint() {
+  if (OPENAI_COMPAT_CHAT_URL) return OPENAI_COMPAT_CHAT_URL;
+  return OPENAI_COMPAT_BASE_URL.endsWith("/v1")
+    ? `${OPENAI_COMPAT_BASE_URL}/chat/completions`
+    : `${OPENAI_COMPAT_BASE_URL}/v1/chat/completions`;
+}
+
+function extractOpenAiCompatibleText(payload) {
+  const content = payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.text || "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => part?.text || part?.content || "")
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
 }
 
 async function createGeminiStructuredResponse({ schemaName, schema, input }) {
@@ -1493,7 +1589,7 @@ async function createGeminiStructuredResponse({ schemaName, schema, input }) {
 }
 
 function buildAnnualPlanPrompt({ inputs, seedPlan }) {
-  return `你是資深課程架構師、PPTX 製作總監與教學 QA 審查員。請使用 Gemini AI 重新生成一份專業、全面、可執行的全年課程包規劃。
+  return `你是資深課程架構師、PPTX 製作總監與教學 QA 審查員。請使用 AI 重新生成一份專業、全面、可執行的全年課程包規劃。
 
 要求：
 1. 必須根據使用者的每週清單、官方來源、資源限制與 seedPlan 重新整理。
@@ -1573,7 +1669,7 @@ ${JSON.stringify(unit || {}, null, 2)}`;
 }
 
 function buildLabContentPrompt({ lab, plan, index }) {
-  return `你是 CA Lab 設計師與技術助教。請用 Gemini AI 生成完整 Lab markdown，不可只列大綱。
+  return `你是 CA Lab 設計師與技術助教。請用 AI 生成完整 Lab markdown，不可只列大綱。
 
 輸出 markdown 必須包含：
 - Student brief
@@ -1597,7 +1693,7 @@ ${JSON.stringify(plan || {}, null, 2)}`;
 }
 
 function buildAssessmentContentPrompt({ assessment, plan, index }) {
-  return `你是 assessment designer、moderator 與 rubric reviewer。請用 Gemini AI 生成完整 assessment markdown。
+  return `你是 assessment designer、moderator 與 rubric reviewer。請用 AI 生成完整 assessment markdown。
 
 輸出 markdown 必須包含：
 - Assessment brief
@@ -1620,7 +1716,7 @@ ${JSON.stringify(plan || {}, null, 2)}`;
 }
 
 function buildAssessmentBankPrompt({ plan }) {
-  return `你是全年課程 assessment bank architect。請用 Gemini AI 為整個 course package 生成 assessment 題庫與 rubric markdown。
+  return `你是全年課程 assessment bank architect。請用 AI 為整個 course package 生成 assessment 題庫與 rubric markdown。
 
 必須包含：
 - 使用原則
@@ -1635,7 +1731,7 @@ ${JSON.stringify(plan || {}, null, 2)}`;
 }
 
 function buildScriptRevisionPrompt({ script, context, mode }) {
-  return `你是資深教師講稿編修員。請用 Gemini AI 依指定模式修訂講稿，回傳完整 script。
+  return `你是資深教師講稿編修員。請用 AI 依指定模式修訂講稿，回傳完整 script。
 
 模式：${mode || "expand"}
 
@@ -1653,7 +1749,7 @@ ${script || ""}`;
 }
 
 function buildSlideRevisionPrompt({ slide, feedback, inputs }) {
-  return `你是專業 PPT prompt editor。請用 Gemini AI 根據教師意見重寫單頁 slide 的 PPT 生成 prompt。
+  return `你是專業 PPT prompt editor。請用 AI 根據教師意見重寫單頁 slide 的 PPT 生成 prompt。
 
 要求：
 1. 保留 slide 的教學目標，但改善 visible text、activity、speaker notes、layout、visual。
@@ -1845,6 +1941,15 @@ function parseStructuredJson(text, providerName) {
   try {
     return JSON.parse(trimmed);
   } catch (error) {
+    const objectStart = trimmed.indexOf("{");
+    const objectEnd = trimmed.lastIndexOf("}");
+    if (objectStart >= 0 && objectEnd > objectStart) {
+      try {
+        return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
+      } catch {
+        // Fall through to the original parse error for clearer diagnostics.
+      }
+    }
     throw new Error(`${providerName} response was not valid JSON: ${error.message}`);
   }
 }
@@ -1946,8 +2051,17 @@ function classifyGeminiModel(model) {
 }
 
 function resolveAiProvider() {
-  if (AI_PROVIDER === "gemini" || AI_PROVIDER === "auto") {
+  if (AI_PROVIDER === "openai-compatible") {
+    return OPENAI_COMPAT_API_KEY ? { name: "openai-compatible", model: OPENAI_COMPAT_MODEL } : null;
+  }
+
+  if (AI_PROVIDER === "gemini") {
     return GEMINI_API_KEY ? { name: "gemini", model: GEMINI_MODEL } : null;
+  }
+
+  if (AI_PROVIDER === "auto") {
+    if (OPENAI_COMPAT_API_KEY) return { name: "openai-compatible", model: OPENAI_COMPAT_MODEL };
+    if (GEMINI_API_KEY) return { name: "gemini", model: GEMINI_MODEL };
   }
 
   return null;
@@ -1955,7 +2069,15 @@ function resolveAiProvider() {
 
 function normalizeProvider(value) {
   const provider = String(value || "auto").trim().toLowerCase();
-  return ["auto", "gemini"].includes(provider) ? provider : "gemini";
+  if (["openai-compatible", "openai_compatible", "openai", "qwen", "newcoin"].includes(provider)) {
+    return "openai-compatible";
+  }
+  if (["auto", "gemini"].includes(provider)) return provider;
+  return "openai-compatible";
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function normalizeGammaExport(value) {
