@@ -939,6 +939,15 @@ legend {
   border-color: #a9d8cf;
 }
 
+.lecture-ai-notice.partial {
+  background: #fffaf0;
+  border-color: #e7c36a;
+}
+
+.lecture-ai-notice.partial strong {
+  color: #8a5b00;
+}
+
 .lecture-ai-notice.error {
   background: #fff6f4;
   border-color: #f2b8ad;

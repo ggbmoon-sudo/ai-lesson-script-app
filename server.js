@@ -210,6 +210,44 @@ const lecturePptxSchema = {
   },
 };
 
+const lecturePptxSummarySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "subtopics", "teachingMinutes", "slideTarget", "templateId", "outcomes", "pptFocus", "recordingCue", "duplicateCleanup", "qaChecklist"],
+  properties: {
+    title: { type: "string" },
+    subtopics: stringArraySchema,
+    teachingMinutes: { type: "number" },
+    slideTarget: { type: "number" },
+    templateId: { type: "string" },
+    outcomes: stringArraySchema,
+    pptFocus: stringArraySchema,
+    recordingCue: { type: "string" },
+    duplicateCleanup: { type: "string" },
+    qaChecklist: stringArraySchema,
+  },
+};
+
+const lecturePptxChecklistChunkSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["slideSpec", "pptxChecklist"],
+  properties: {
+    slideSpec: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: slideSpecItemSchema,
+    },
+    pptxChecklist: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: pptxChecklistItemSchema,
+    },
+  },
+};
+
 const annualPlanSchema = {
   type: "object",
   additionalProperties: false,
@@ -478,6 +516,26 @@ async function handleAiRequest(req, res, pathname) {
       schemaName: "lecture_pptx_generation_plan",
       schema: lecturePptxSchema,
       input: buildLecturePptxPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lecture-pptx-summary") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_summary",
+      schema: lecturePptxSummarySchema,
+      input: buildLecturePptxSummaryPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lecture-pptx-checklist") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "lecture_pptx_checklist_chunk",
+      schema: lecturePptxChecklistChunkSchema,
+      input: buildLecturePptxChecklistPrompt(body),
     });
     return sendJson(res, 200, result);
   }
@@ -1470,6 +1528,47 @@ function buildLecturePptxPrompt({ unit, inputs }) {
 ${JSON.stringify(inputs || {}, null, 2)}
 
 Lecture 目前資料：
+${JSON.stringify(unit || {}, null, 2)}`;
+}
+
+function buildLecturePptxSummaryPrompt({ unit, inputs }) {
+  return `你是專業課程架構師與 PPTX 教學設計師。請快速重新生成這個 Lecture 的核心教學結構，只輸出 summary 欄位，不要輸出逐頁 checklist。
+
+必須做到：
+1. 以使用者最新大題目、子題目、教學時間、slideTarget 為準。
+2. outcomes 必須具體、可觀察、可評核，不能沿用舊主題。
+3. pptFocus 必須說明這堂課 PPT 應如何組織：概念、demo、checkpoint、troubleshooting、lab bridge。
+4. recordingCue 必須依 teachingMinutes 拆成合理段落。
+5. duplicateCleanup 必須指出若與前後 deck 重複，應保留什麼差異。
+6. qaChecklist 必須能阻擋錯 topic、錯 duration、缺 speaker notes、缺 lab bridge 的 PPT。
+7. 不可保留與新大題目無關的 Kubernetes / CKA / CKAD 內容，除非使用者輸入明確要求。
+8. 使用繁體中文；技術命令、產品名可保留英文。
+
+課程輸入：
+${JSON.stringify(inputs || {}, null, 2)}
+
+Lecture 最新資料：
+${JSON.stringify(unit || {}, null, 2)}`;
+}
+
+function buildLecturePptxChecklistPrompt({ unit, inputs, startSlide, endSlide }) {
+  return `你是 PPTX 製作總監。請只為指定 slide range 生成專業逐頁清單，避免一次輸出整份 deck。
+
+Slide range：${startSlide} 到 ${endSlide}
+
+必須做到：
+1. slideSpec 與 pptxChecklist 只包含上述 slide_no 範圍。
+2. 每一頁都必須對齊大題目、子題目、教學時間與 summary outcomes。
+3. 每頁 visible_text 不超過 4 bullets。
+4. speaker_notes 必須含 teaching purpose、講解重點、checkpoint / answer key / fallback。
+5. visual_direction 必須能直接交給 PPTX/Gamma renderer。
+6. lab_bridge 與 qa_gate 必須逐頁具體。
+7. 使用繁體中文；命令、Linux service 名稱、產品名可保留英文。
+
+課程輸入：
+${JSON.stringify(inputs || {}, null, 2)}
+
+Lecture summary：
 ${JSON.stringify(unit || {}, null, 2)}`;
 }
 

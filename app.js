@@ -661,8 +661,18 @@ async function requestAi(type, payload) {
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error || `AI request failed: ${response.status}`);
+    const raw = await response.text().catch(() => "");
+    let error = {};
+    try {
+      error = raw ? JSON.parse(raw) : {};
+    } catch {
+      error = {};
+    }
+    const detail = error.error || error.message || clean(raw.replace(/<[^>]+>/g, " ")).slice(0, 220);
+    if (response.status === 502 && !detail) {
+      throw new Error("Codespaces / server 回傳 502。通常是 server 未重啟、port proxy timeout，或單次 Gemini request 太大。請查看 terminal log。");
+    }
+    throw new Error(detail || `AI request failed: ${response.status}`);
   }
 
   return response.json();
@@ -872,6 +882,68 @@ function mergeLectureAiUnit(unit, aiUnit, inputs, index) {
   return merged;
 }
 
+function mergeLectureAiSummary(unit, aiUnit, inputs, index) {
+  if (!aiUnit) return unit;
+  const merged = {
+    ...unit,
+    title: clean(aiUnit.title) || unit.title,
+    subtopics: Array.isArray(aiUnit.subtopics) && aiUnit.subtopics.length ? aiUnit.subtopics.map(clean).filter(Boolean) : unit.subtopics,
+    videoMinutes: Number(aiUnit.teachingMinutes) || unit.videoMinutes,
+    pptSlides: Number(aiUnit.slideTarget) || unit.pptSlides,
+    templateId: clean(aiUnit.templateId) || unit.templateId,
+    outcomes: Array.isArray(aiUnit.outcomes) && aiUnit.outcomes.length ? aiUnit.outcomes : unit.outcomes,
+    pptFocus: Array.isArray(aiUnit.pptFocus) && aiUnit.pptFocus.length ? aiUnit.pptFocus : unit.pptFocus,
+    recordingCue: aiUnit.recordingCue || unit.recordingCue,
+    duplicateCleanup: aiUnit.duplicateCleanup || unit.duplicateCleanup,
+    qaChecklist: Array.isArray(aiUnit.qaChecklist) && aiUnit.qaChecklist.length ? aiUnit.qaChecklist : unit.qaChecklist,
+  };
+  merged.hours = roundOne(merged.videoMinutes / 60);
+  updateLectureDerivedFields(merged, inputs, index, { preserveAiChecklist: true, preserveAiContent: true });
+  return merged;
+}
+
+function buildLectureAiRefreshPayload(unit) {
+  return {
+    id: unit.id,
+    number: unit.number,
+    week: unit.week,
+    title: unit.title,
+    subtopics: unit.subtopics || [],
+    teachingMinutes: unit.videoMinutes,
+    slideTarget: unit.pptSlides,
+    templateId: unit.templateId,
+    moduleId: unit.metadata?.module_id || "",
+    difficulty: unit.metadata?.difficulty || "",
+    resourceProfile: unit.metadata?.resource_profile || [],
+    officialAlignment: unit.metadata?.official_alignment || [],
+    outcomes: unit.outcomes || [],
+    pptFocus: unit.pptFocus || [],
+    recordingCue: unit.recordingCue || "",
+    duplicateCleanup: unit.duplicateCleanup || "",
+    qaChecklist: unit.qaChecklist || [],
+  };
+}
+
+function buildLectureAiInputs(inputs) {
+  return {
+    moduleTitle: inputs.moduleTitle,
+    audience: inputs.audience,
+    context: inputs.context,
+    slidesPerHour: inputs.slidesPerHour,
+    resourceConstraints: inputs.resourceConstraints || [],
+    officialRefs: inputs.officialRefs || [],
+  };
+}
+
+function getLectureChecklistRanges(slideTarget, chunkSize = 10) {
+  const total = clamp(Number(slideTarget) || 10, 1, 80);
+  const ranges = [];
+  for (let start = 1; start <= total; start += chunkSize) {
+    ranges.push({ startSlide: start, endSlide: Math.min(total, start + chunkSize - 1) });
+  }
+  return ranges;
+}
+
 function buildLectureTopics(customTopics, count, weeklyLectures = []) {
   const defaults = [
     "進階 Linux 銜接：systemd、networking、package、logs",
@@ -1077,9 +1149,46 @@ async function updateAnnualLectureFromCard(index) {
   persistState();
 
   setAiBusy(true, "Gemini 更新 Lecture/PPT 清單中");
+  let summaryDone = false;
   try {
-    const aiUnit = await requestAi("lecture-pptx", { unit, inputs: plan.inputs });
-    Object.assign(unit, mergeLectureAiUnit(unit, aiUnit, plan.inputs, index));
+    const compactInputs = buildLectureAiInputs(plan.inputs);
+    const summary = await requestAi("lecture-pptx-summary", {
+      unit: buildLectureAiRefreshPayload(unit),
+      inputs: compactInputs,
+    });
+    summaryDone = true;
+    Object.assign(unit, mergeLectureAiSummary(unit, summary, plan.inputs, index));
+    unit.aiRefresh = {
+      state: "running",
+      message: `Gemini 已更新中間教學重點，正在分段生成 ${unit.pptSlides} 頁專業 PPTX 清單。`,
+      updatedAt: new Date().toISOString(),
+    };
+    renderAnnualPlan();
+    persistState();
+
+    const slideSpec = [];
+    const pptxChecklist = [];
+    const ranges = getLectureChecklistRanges(unit.pptSlides, 10);
+    for (const range of ranges) {
+      unit.aiRefresh = {
+        state: "running",
+        message: `Gemini 正在生成 PPTX 清單 ${range.startSlide}-${range.endSlide} / ${unit.pptSlides}。`,
+        updatedAt: new Date().toISOString(),
+      };
+      renderAnnualPlan();
+      const chunk = await requestAi("lecture-pptx-checklist", {
+        unit: buildLectureAiRefreshPayload(unit),
+        inputs: compactInputs,
+        ...range,
+      });
+      slideSpec.push(...(Array.isArray(chunk.slideSpec) ? chunk.slideSpec : []));
+      pptxChecklist.push(...(Array.isArray(chunk.pptxChecklist) ? chunk.pptxChecklist : []));
+    }
+    if (!slideSpec.length || !pptxChecklist.length) {
+      throw new Error("Gemini 未回傳逐頁 PPTX 清單。");
+    }
+    unit.slideSpec = slideSpec.sort((a, b) => Number(a.slide_no || 0) - Number(b.slide_no || 0));
+    unit.pptxChecklist = pptxChecklist.sort((a, b) => Number(a.slide_no || 0) - Number(b.slide_no || 0));
     unit.aiRefresh = {
       state: "done",
       message: `Gemini 已更新：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`,
@@ -1088,7 +1197,7 @@ async function updateAnnualLectureFromCard(index) {
   } catch (error) {
     console.warn(error);
     unit.aiRefresh = {
-      state: "error",
+      state: summaryDone ? "partial" : "error",
       message: `Gemini Lecture/PPT 清單更新失敗：${error.message}`,
       updatedAt: new Date().toISOString(),
     };
@@ -1099,7 +1208,7 @@ async function updateAnnualLectureFromCard(index) {
   }
   recalculateAnnualMetrics(plan);
   syncAnnualLectureTimetable(plan);
-  if (unit.aiRefresh.state === "done") {
+  if (unit.aiRefresh.state === "done" || unit.aiRefresh.state === "partial") {
     logAudit("Lecture/PPT 編輯", `Gemini 更新 ${unit.id}：${unit.title} / ${unit.videoMinutes} 分鐘 / ${unit.pptSlides} slides`);
   }
   renderAnnualPlan();
@@ -1988,13 +2097,13 @@ function renderAll() {
 }
 
 function getLectureRefreshState(unit) {
-  return unit?.aiRefresh && ["running", "done", "error"].includes(unit.aiRefresh.state) ? unit.aiRefresh : null;
+  return unit?.aiRefresh && ["running", "done", "partial", "error"].includes(unit.aiRefresh.state) ? unit.aiRefresh : null;
 }
 
 function renderLectureAiRefreshNotice(unit) {
   const refresh = getLectureRefreshState(unit);
   if (!refresh) return "";
-  const label = refresh.state === "running" ? "Gemini 生成中" : refresh.state === "done" ? "Gemini 已更新" : "Gemini 生成失敗";
+  const label = refresh.state === "running" ? "Gemini 生成中" : refresh.state === "done" ? "Gemini 已更新" : refresh.state === "partial" ? "Gemini 部分完成" : "Gemini 生成失敗";
   return `<div class="lecture-ai-notice ${escapeHtml(refresh.state)}"><strong>${label}</strong><span>${escapeHtml(refresh.message || "")}</span></div>`;
 }
 
@@ -2024,6 +2133,7 @@ function renderLectureOutcomeList(unit) {
 function getLecturePptSpecSummary(unit) {
   const refresh = getLectureRefreshState(unit);
   if (refresh?.state === "running") return "PPT spec：Gemini 正在重寫逐頁 purpose / visible text / speaker notes...";
+  if (refresh?.state === "partial") return "PPT spec：Gemini 已更新中間教學重點，但逐頁 PPTX 清單未完整完成。";
   if (refresh?.state === "error") return "PPT spec：Gemini 未完成，暫停使用舊清單，避免輸出錯誤主題。";
   return `PPT spec：${(unit.slideSpec || []).slice(0, 4).map((item) => item.section).join(" → ")}${unit.slideSpec?.length > 4 ? "..." : ""}`;
 }
@@ -2031,6 +2141,7 @@ function getLecturePptSpecSummary(unit) {
 function getLectureQaSummary(unit) {
   const refresh = getLectureRefreshState(unit);
   if (refresh?.state === "running") return "QA：Gemini 正在對齊 duration、slide target、teaching purpose 與 lab bridge。";
+  if (refresh?.state === "partial") return "QA：中間教學重點已更新；請重試以補齊逐頁 PPTX 清單。";
   if (refresh?.state === "error") return "QA：請先修復 Gemini 連線後重新生成。";
   return `QA：${(unit.qaChecklist || []).slice(0, 3).join("；")}`;
 }
