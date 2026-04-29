@@ -261,10 +261,20 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                 <p class="eyebrow">Content Generator</p>
                 <h2 id="annualContentTitle">Lab / Assessment 內容生成區</h2>
               </div>
-              <button class="action-button ghost" id="copyAnnualContentBtn" type="button">
-                <span class="button-icon">C</span>
-                <span>複製內容</span>
-              </button>
+              <div class="control-bar compact-actions">
+                <button class="action-button ghost" id="generateAllLabsBtn" type="button">
+                  <span class="button-icon">L</span>
+                  <span>生成全部 Lab</span>
+                </button>
+                <button class="action-button ghost" id="generateAssessmentBankBtn" type="button">
+                  <span class="button-icon">Q</span>
+                  <span>題庫與 Rubric</span>
+                </button>
+                <button class="action-button ghost" id="copyAnnualContentBtn" type="button">
+                  <span class="button-icon">C</span>
+                  <span>複製內容</span>
+                </button>
+              </div>
             </div>
             <textarea class="content-editor" id="annualContentOutput" rows="16" placeholder="按 Lab 或 Assessment 卡片的「生成內容」後，會在這裡產生完整 instructions、steps、rubric 與驗收標準。"></textarea>
           </section>
@@ -479,6 +489,17 @@ EA：#Cyrus 負責 Isakei 作業；期末 Skill Test 無提示，API / Service e
                   <span>目標字數</span>
                   <strong id="targetWordsStatus">1690</strong>
                 </div>
+              </div>
+              <div class="target-meter" id="scriptGoalStatus"></div>
+              <div class="control-bar compact-actions">
+                <button class="action-button" id="completeScriptBtn" type="button">
+                  <span class="button-icon">%</span>
+                  <span>補到目標字數</span>
+                </button>
+                <button class="action-button ghost" id="addLectureDepthBtn" type="button">
+                  <span class="button-icon">+</span>
+                  <span>補核心講授</span>
+                </button>
               </div>
             </section>
           </div>

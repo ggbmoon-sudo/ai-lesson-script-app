@@ -943,6 +943,48 @@ legend {
   font-size: 0.98rem;
 }
 
+.target-meter {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdfc;
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.target-meter-row {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.target-meter-row span,
+.target-meter small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.target-meter-row strong {
+  display: block;
+  font-size: 1.16rem;
+  margin-top: 2px;
+}
+
+.target-bar {
+  background: #edf2f0;
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.target-bar span {
+  background: linear-gradient(90deg, var(--teal), var(--blue));
+  display: block;
+  height: 100%;
+}
+
 .quick-prompts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1116,6 +1158,83 @@ legend {
   min-height: 160px;
   white-space: pre-wrap;
   line-height: 1.62;
+}
+
+.compare-heading {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  white-space: normal;
+}
+
+.compare-heading span,
+.compare-heading small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.compare-heading strong {
+  display: block;
+  margin-top: 2px;
+}
+
+.compare-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 12px 0;
+  white-space: normal;
+}
+
+.compare-metric {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.compare-metric span,
+.compare-metric small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.78rem;
+}
+
+.compare-metric strong {
+  display: block;
+  font-size: 1.18rem;
+  margin: 4px 0;
+}
+
+.compare-metric.positive {
+  border-color: rgba(13, 138, 124, 0.35);
+}
+
+.compare-metric.negative {
+  border-color: rgba(190, 124, 12, 0.42);
+}
+
+.compare-sections {
+  display: grid;
+  gap: 10px;
+  white-space: normal;
+}
+
+.compare-sections section {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.compare-sections ul,
+.compare-sections p {
+  margin: 6px 0 0;
+}
+
+.compare-footnote {
+  color: var(--muted);
+  margin: 12px 0 0;
+  white-space: normal;
 }
 
 .audit-box {
@@ -1410,6 +1529,7 @@ legend {
   .check-grid,
   .slide-grid,
   .metric-grid,
+  .compare-metrics,
   .annual-metrics,
   .annual-card-head,
   .governance-grid,

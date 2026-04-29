@@ -236,6 +236,7 @@ const state = {
     lastGeneration: null,
     status: "未設定 Gamma API Key，可先匯出 Gamma-ready prompt。",
   },
+  assessmentBank: null,
   interviewAnswers: "",
   role: "teacher",
   lastLessonInputs: null,
@@ -324,6 +325,7 @@ function bindDom() {
   dom.wpmStatus = document.getElementById("wpmStatus");
   dom.coreMinutesStatus = document.getElementById("coreMinutesStatus");
   dom.targetWordsStatus = document.getElementById("targetWordsStatus");
+  dom.scriptGoalStatus = document.getElementById("scriptGoalStatus");
   dom.scriptOutput = document.getElementById("scriptOutput");
   dom.assistantContext = document.getElementById("assistantContextInput");
   dom.assistantQuestion = document.getElementById("assistantQuestionInput");
@@ -363,6 +365,8 @@ function bindEvents() {
   document.getElementById("generateAnnualPlanBtn").addEventListener("click", generateAnnualPlan);
   document.getElementById("exportAnnualMdBtn").addEventListener("click", exportAnnualMarkdown);
   document.getElementById("exportAnnualJsonBtn").addEventListener("click", exportAnnualJson);
+  document.getElementById("generateAllLabsBtn").addEventListener("click", generateAllLabContent);
+  document.getElementById("generateAssessmentBankBtn").addEventListener("click", generateAssessmentBank);
   document.getElementById("copyAnnualContentBtn").addEventListener("click", copyAnnualGeneratedContent);
   document.getElementById("regenerateSlideBtn").addEventListener("click", regenerateSelectedSlide);
   document.getElementById("loadDemoBtn").addEventListener("click", loadDemoProject);
@@ -413,9 +417,12 @@ function bindEvents() {
   document.getElementById("generateScriptBtn").addEventListener("click", generateScript);
   document.getElementById("shortenScriptBtn").addEventListener("click", () => reviseScript("shorten"));
   document.getElementById("expandScriptBtn").addEventListener("click", () => reviseScript("expand"));
+  document.getElementById("completeScriptBtn").addEventListener("click", completeScriptToTarget);
+  document.getElementById("addLectureDepthBtn").addEventListener("click", addCoreLectureDepth);
   dom.scriptOutput.addEventListener("input", () => {
     state.script = dom.scriptOutput.value;
     persistState();
+    renderScriptGoal();
     renderStatus();
   });
 
@@ -472,7 +479,7 @@ function applyRolePermissions() {
   const canAssist = ["teacher", "ta", "admin"].includes(state.role);
   const canPublish = ["teacher", "admin"].includes(state.role);
 
-  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "applyQuestionAnswersBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "exportGammaDeckBtn", "copyPromptBtn"], !canEdit);
+  setDisabled(["generateAnnualPlanBtn", "exportAnnualMdBtn", "exportAnnualJsonBtn", "generateAllLabsBtn", "generateAssessmentBankBtn", "copyAnnualContentBtn", "generateLessonBtn", "regenerateSlideBtn", "sendSlidesToScriptBtn", "applyQuestionAnswersBtn", "generateScriptBtn", "shortenScriptBtn", "expandScriptBtn", "completeScriptBtn", "addLectureDepthBtn", "saveVersionBtn", "exportJsonBtn", "exportProjectJsonBtn", "importProjectJsonBtn", "exportLessonMdBtn", "exportMarkdownBtn", "exportPptxBtn", "exportCoursePackBtn", "exportGammaDeckBtn", "copyPromptBtn"], !canEdit);
   setDisabled(["connectDriveBtn", "backupDriveBtn", "listDriveBackupsBtn", "restoreLatestDriveBtn"], !canEdit || state.drive.busy);
   setDisabled(["publishLessonBtn"], !canPublish);
   setDisabled(["sendAssistantBtn"], !canAssist);
@@ -612,6 +619,7 @@ function getAnnualInputs() {
 function generateAnnualPlan() {
   const inputs = getAnnualInputs();
   state.annualPlan = buildAnnualPlan(inputs);
+  state.assessmentBank = null;
   logAudit("年度規劃", `${inputs.moduleTitle} 已生成全年 Lecture / Lab / Assessment 藍圖`);
   renderAnnualPlan();
   markDriveBackupNeeded("年度規劃");
@@ -661,6 +669,7 @@ function buildAnnualPlan(inputs) {
       index: null,
       updatedAt: null,
     },
+    assessmentBank: null,
     complianceNotes: [
       "CA 筆試題目應使用教師自建、公開授權或 AI 生成後人工審核的原創題；避免使用未授權題庫。",
       "EA Skill Test 保持 no hint；所有 API / Service endpoint 必須 public，並在 rubric 中列明驗收方法。",
@@ -1215,6 +1224,7 @@ function renderAll() {
   renderTimeline();
   renderSlides();
   renderTimeBudget();
+  renderScriptGoal();
   renderScript();
   renderChat();
   renderPublishedQa();
@@ -1292,6 +1302,7 @@ function renderAnnualPlan() {
       </div>
       <p>${escapeHtml(lab.outcome)}</p>
       <small>交付：${escapeHtml(lab.deliverables.join("、"))}</small>
+      ${lab.generatedContent ? "<small>狀態：已生成學生版、教師版、evidence pack 與 rubric</small>" : ""}
     </article>
   `).join("");
 
@@ -1306,6 +1317,7 @@ function renderAnnualPlan() {
       </div>
       <p>交付：${escapeHtml(assessment.deliverables.join("、"))}</p>
       <small>${escapeHtml(assessment.rules.join("；"))}</small>
+      ${assessment.generatedContent ? "<small>狀態：已生成題庫、答案鍵、scenario task 與 rubric</small>" : ""}
     </article>
   `).join("");
 
@@ -1403,6 +1415,58 @@ function generateAssessmentContent(index) {
   persistState();
 }
 
+function generateAllLabContent() {
+  if (!state.annualPlan) generateAnnualPlan();
+  const plan = state.annualPlan;
+  if (!plan?.labs?.length) return;
+  const markdown = plan.labs
+    .map((lab, index) => {
+      const content = buildLabContentMarkdown(lab, plan, index);
+      lab.generatedContent = content;
+      return content;
+    })
+    .join("\n\n---\n\n");
+  plan.generatedContent = {
+    title: "全部 CA Lab Series｜完整學生版 + 教師版",
+    markdown,
+    type: "lab-batch",
+    index: null,
+    updatedAt: new Date().toISOString(),
+  };
+  logAudit("Lab 批量生成", `${plan.labs.length} 個 Lab 已生成完整 instructions / evidence / rubric`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("Lab 批量生成");
+  persistState();
+}
+
+function generateAssessmentBank() {
+  if (!state.annualPlan) generateAnnualPlan();
+  const plan = state.annualPlan;
+  if (!plan?.assessments?.length) return;
+  const markdown = buildAssessmentBankMarkdown(plan);
+  state.assessmentBank = {
+    id: cryptoId(),
+    title: `${plan.inputs.moduleTitle}｜Assessment 題庫與 Rubric`,
+    markdown,
+    generatedAt: new Date().toISOString(),
+  };
+  plan.assessmentBank = structuredCloneSafe(state.assessmentBank);
+  plan.assessments.forEach((assessment, index) => {
+    assessment.generatedContent = buildAssessmentContentMarkdown(assessment, plan, index);
+  });
+  plan.generatedContent = {
+    title: "Assessment 題庫與 Rubric｜CA / EA",
+    markdown,
+    type: "assessment-bank",
+    index: null,
+    updatedAt: new Date().toISOString(),
+  };
+  logAudit("Assessment 題庫", `${plan.assessments.length} 個評核項已生成題庫、答案鍵與 Rubric`);
+  renderAnnualPlan();
+  markDriveBackupNeeded("Assessment 題庫生成");
+  persistState();
+}
+
 async function copyAnnualGeneratedContent() {
   const text = dom.annualContentOutput?.value || "";
   if (!text) return;
@@ -1419,6 +1483,15 @@ function buildLabContentMarkdown(lab, plan, index) {
     .filter((unit) => unit.week <= (lab.week || plan.inputs.weeks))
     .slice(-1)[0] || plan.lectureUnits[index] || plan.lectureUnits[0];
   const checklist = inferLabChecklist(lab);
+  const expectedOutputs = inferLabExpectedOutputs(lab);
+  const troubleshooting = inferLabTroubleshooting(lab);
+  const answerKey = inferLabAnswerKey(lab);
+  const evidenceRows = [
+    ["Environment", "VM / cluster / cloud setting screenshot", "能重現學生使用的環境"],
+    ["Artifact", "YAML / playbook / command log / Git link", "證明不是只靠截圖交功課"],
+    ["Verification", "kubectl output / endpoint response / logs", "證明任務真的運作"],
+    ["Reflection", "80-120 字錯誤與修正記錄", "證明學生知道自己做了什麼"],
+  ];
   return `# ${lab.id}: ${lab.title}
 
 ## Timetable
@@ -1427,6 +1500,13 @@ function buildLabContentMarkdown(lab, plan, index) {
 - Hours: ${lab.hours}
 - Environment: ${lab.environment}
 - Related lecture: ${prevLecture?.id || "N/A"} ${prevLecture?.title || ""}
+
+## Lab Profile
+
+- Mode: guided hands-on + evidence-based assessment
+- Student version: 可以直接派給學生
+- Teacher version: 下面包含 answer key、common errors 與 marking rubric
+- Safety note: 若使用 cloud / public endpoint，必須在提交前列明 cleanup 方法與費用風險
 
 ## Learning Outcomes
 
@@ -1442,9 +1522,19 @@ function buildLabContentMarkdown(lab, plan, index) {
 
 ${checklist.map((item, itemIndex) => `${itemIndex + 1}. ${item}`).join("\n")}
 
+## Expected Output
+
+${expectedOutputs.map((item) => `- ${item}`).join("\n")}
+
 ## Deliverables
 
 ${lab.deliverables.map((item) => `- ${item}`).join("\n")}
+
+## Evidence Pack Table
+
+| Evidence | What to submit | Why it matters |
+| --- | --- | --- |
+${evidenceRows.map((row) => `| ${row[0]} | ${row[1]} | ${row[2]} |`).join("\n")}
 
 ## Acceptance Criteria
 
@@ -1455,13 +1545,33 @@ ${lab.deliverables.map((item) => `- ${item}`).join("\n")}
 
 ## Marking Rubric
 
-${lab.rubric.map((item) => `- ${item}: 25%`).join("\n")}
+| Criteria | Weight | Evidence |
+| --- | ---: | --- |
+| Correctness | 30% | artifact 能完成 lab objective |
+| Reproducibility | 25% | 另一台環境可根據步驟重做 |
+| Troubleshooting evidence | 20% | 有 command、logs、events 或 endpoint 檢查 |
+| Explanation quality | 15% | 能解釋核心指令 / YAML / cloud setting |
+| Safety and cleanup | 10% | 有資源、權限、費用或 cleanup 意識 |
+
+## Common Errors And Hints
+
+${troubleshooting.map((item) => `- ${item}`).join("\n")}
+
+## Teacher Answer Key / Checking Notes
+
+${answerKey.map((item) => `- ${item}`).join("\n")}
+
+## Extension / Stretch Task
+
+- 把本 Lab 的成果改成一個 no-hint mini task，讓同學交換環境重做。
+- 把 evidence pack 整理成 1 頁 PDF 或 README，模擬真實 workplace handover。
 
 ## Teacher Notes
 
 - 先檢查學生是否理解資源限制，特別是 VM RAM、CPU、storage。
 - 不直接給完整答案；只提示如何閱讀 error、events、logs。
 - 若學生使用 AI 生成指令，必須要求他解釋每個 flag / field。
+- 教師發布前需試跑一次所有驗收命令，並確認不含未授權題庫或外部答案。
 `;
 }
 
@@ -1515,8 +1625,122 @@ function inferLabChecklist(lab) {
   ];
 }
 
+function inferLabExpectedOutputs(lab) {
+  const text = `${lab.title} ${lab.environment} ${lab.outcome}`.toLowerCase();
+  if (text.includes("ubuntu") || text.includes("vm")) {
+    return [
+      "`hostnamectl`、`free -h`、`df -h`、`ip addr` 或等效截圖能證明 VM ready。",
+      "SSH 可以連線，package update 完成，並列出 CPU/RAM/disk 設定。",
+      "學生能說明 4GB minimum / 8GB preferred 對 Kubernetes lab 的影響。",
+    ];
+  }
+  if (text.includes("ansible")) {
+    return [
+      "Inventory 可清楚分辨 control node 與 managed nodes。",
+      "Playbook 至少第二次執行能顯示 idempotent 結果，沒有大量 unintended changes。",
+      "提交 playbook、執行 log、failed task 排查記錄與修正版本。",
+    ];
+  }
+  if (text.includes("ckad")) {
+    return [
+      "`kubectl get` / `describe` / `logs` 可證明 workload 正常。",
+      "YAML 包含正確 image、ports、env/config、probe 或 resource setting。",
+      "學生能指出 CKAD 視角下的 application acceptance criteria。",
+    ];
+  }
+  if (text.includes("cka")) {
+    return [
+      "`kubectl get nodes`、namespace、service 或 storage 狀態能被驗證。",
+      "Troubleshooting 記錄包含 describe/events/logs 或 node condition。",
+      "學生能指出 CKA 視角下 cluster administrator 要負責的 evidence。",
+    ];
+  }
+  if (text.includes("eks") || text.includes("aws")) {
+    return [
+      "能說明 managed control plane、node group、IAM 或 service exposure 的角色。",
+      "Public endpoint 可由評核員測試，並附 expected response。",
+      "提交 cleanup record，避免雲端資源持續收費。",
+    ];
+  }
+  return [
+    "核心 artifact 可被重新執行或重新檢查。",
+    "狀態、log、endpoint 或截圖能證明任務完成。",
+    "反思能說明一個錯誤、原因與修正方法。",
+  ];
+}
+
+function inferLabTroubleshooting(lab) {
+  const text = `${lab.title} ${lab.environment} ${lab.outcome}`.toLowerCase();
+  const base = [
+    "先讀 error message，再決定查 Linux、container runtime、Kubernetes API 還是 application layer。",
+    "不要只交最後成功截圖；保留至少一段排查證據。",
+  ];
+  if (text.includes("minikube") || text.includes("kubernetes") || text.includes("cka") || text.includes("ckad")) {
+    return [
+      ...base,
+      "Pod Pending：先查 resource request、node capacity、PVC 或 image pull。",
+      "Service 無法訪問：先查 selector、port/targetPort、endpoint 與 firewall / ingress。",
+      "YAML apply 失敗：先用 `kubectl explain` 或官方 docs 查欄位，不要猜欄位名。",
+    ];
+  }
+  if (text.includes("ansible")) {
+    return [
+      ...base,
+      "SSH failed：先查 inventory host、user、key、sudo 權限與 network。",
+      "Task changed every run：檢查 module 是否 idempotent，避免用 shell 硬寫不可重入命令。",
+    ];
+  }
+  if (text.includes("eks") || text.includes("aws")) {
+    return [
+      ...base,
+      "Endpoint 不通：先查 security group、service type、load balancer、subnet 與 app health。",
+      "權限失敗：先查 IAM role、policy、AWS Academy lab limitation 與 region。",
+    ];
+  }
+  return base;
+}
+
+function inferLabAnswerKey(lab) {
+  const text = `${lab.title} ${lab.environment} ${lab.outcome}`.toLowerCase();
+  if (text.includes("ubuntu") || text.includes("vm")) {
+    return [
+      "Accept：VM specs、SSH、package baseline、network evidence 全部齊全。",
+      "Reject / resubmit：只有桌面截圖，沒有 command output 或 SSH evidence。",
+      "教師抽查：請學生解釋為什麼 Server 版比 Desktop 版更適合節省資源。",
+    ];
+  }
+  if (text.includes("ansible")) {
+    return [
+      "Accept：inventory + playbook + log + second run evidence，且學生能解釋 idempotency。",
+      "Reject / resubmit：只提交網上 playbook，不能說明每個 task 目的。",
+      "教師抽查：改一個 target host，要求學生說明 playbook 如何調整。",
+    ];
+  }
+  if (text.includes("ckad")) {
+    return [
+      "Accept：workload 可運作，YAML 可重用，學生能解釋 probes/config/resource setting。",
+      "Reject / resubmit：只用 imperative command 建立，沒有提交 YAML 或驗收證據。",
+      "教師抽查：要求學生用同一 YAML 改 namespace 或 image tag。",
+    ];
+  }
+  if (text.includes("cka")) {
+    return [
+      "Accept：cluster/service/troubleshooting evidence 清楚，排查路徑合理。",
+      "Reject / resubmit：只看到最終狀態，沒有 events/logs/describe 等排查記錄。",
+      "教師抽查：提供一個 NotReady / Pending 現象，請學生說出第一個檢查命令。",
+    ];
+  }
+  return [
+    "Accept：artifact、驗收 evidence、反思三者一致。",
+    "Reject / resubmit：結果不可重現或無法解釋主要步驟。",
+    "教師抽查：要求學生用自己的話說明最重要的一個判斷。",
+  ];
+}
+
 function buildAssessmentContentMarkdown(assessment, plan) {
   const isEa = assessment.type === "EA";
+  const questionSet = buildAssessmentQuestionSet(assessment, plan);
+  const rubric = buildAssessmentRubricRows(assessment);
   return `# ${assessment.type}: ${assessment.title}
 
 ## Timetable
@@ -1531,6 +1755,16 @@ function buildAssessmentContentMarkdown(assessment, plan) {
 ${isEa
     ? "學生需要在 no-hint 條件下完成技能實作測驗。所有 API / Service endpoint 必須公開，並能由評核員直接驗收。"
     : "學生需要完成筆試與 Lab checkpoint，證明自己能理解核心概念並完成可重現的 hands-on artifact。"}
+
+## Assessment Blueprint
+
+| Area | Coverage | Evidence |
+| --- | --- | --- |
+| Linux prerequisite | VM readiness、SSH、logs、network、resource awareness | command output / short answer |
+| Kubernetes concept | control plane、node、resource model、desired state | MC / short answer |
+| kubectl / YAML | workload、service、config、troubleshooting | practical task / YAML artifact |
+| Cloud / endpoint | EKS / public service / IAM awareness | endpoint response / explanation |
+| Reflection | error diagnosis、limitation、cleanup | written reflection / oral check |
 
 ## Student Deliverables
 
@@ -1551,17 +1785,35 @@ ${isEa
         "3. 題目可由 AI 生成草稿，但教師必須審核答案、難度與授課覆蓋度。",
       ].join("\n")}
 
+## Question Bank
+
+### MC / Concept Check
+
+${questionSet.mcq.map((item, itemIndex) => `${itemIndex + 1}. ${item.question}\n   - A. ${item.options[0]}\n   - B. ${item.options[1]}\n   - C. ${item.options[2]}\n   - D. ${item.options[3]}\n   - Answer: ${item.answer}\n   - Rationale: ${item.rationale}`).join("\n\n")}
+
+### Short Answer
+
+${questionSet.short.map((item, itemIndex) => `${itemIndex + 1}. ${item.question}\n   - Marking points: ${item.points.join("；")}`).join("\n\n")}
+
+### Scenario / Practical Task
+
+${questionSet.practical.map((item, itemIndex) => `${itemIndex + 1}. ${item.task}\n   - Student evidence: ${item.evidence.join("、")}\n   - Teacher check: ${item.check}`).join("\n\n")}
+
 ## Rubric
 
-- Correctness: 35%
-- Reproducibility: 25%
-- Troubleshooting evidence: 20%
-- Explanation / reflection: 10%
-- Security and cleanup awareness: 10%
+| Criteria | Weight | Excellent | Pass | Resubmit |
+| --- | ---: | --- | --- | --- |
+${rubric.map((row) => `| ${row.criteria} | ${row.weight} | ${row.excellent} | ${row.pass} | ${row.resubmit} |`).join("\n")}
 
 ## Rules
 
 ${assessment.rules.map((item) => `- ${item}`).join("\n")}
+
+## Sample Feedback Phrases
+
+- High performance: 你的 evidence 足夠完整，而且能清楚解釋為什麼這個 output 代表任務完成。
+- Borderline pass: 結果大致正確，但排查紀錄不足；請補上 command log 或 endpoint 驗收。
+- Resubmit: 目前未能證明結果可重現，請補交 artifact、驗收方法和錯誤修正記錄。
 
 ## Teacher Checklist
 
@@ -1569,7 +1821,142 @@ ${assessment.rules.map((item) => `- ${item}`).join("\n")}
 - 確認評分標準在評核前公開。
 - 確認答案與驗收命令已由教師試跑。
 - 保存版本、rubric、sample answer 與 moderation notes。
+- 不使用未授權商業題庫；AI 生成題目必須由教師審核與改寫。
 `;
+}
+
+function buildAssessmentBankMarkdown(plan) {
+  const sections = plan.assessments
+    .map((assessment, index) => buildAssessmentContentMarkdown(assessment, plan, index))
+    .join("\n\n---\n\n");
+  return `# ${plan.inputs.moduleTitle}｜Assessment 題庫與 Rubric
+
+生成時間：${new Date().toLocaleString("zh-Hant")}
+對象：${plan.inputs.audience}
+
+## 使用原則
+
+- 題庫只作教師出題草稿，不直接公開完整答案。
+- 所有題目需由教師審核授課覆蓋度、難度、答案與語言清晰度。
+- 不使用未授權題庫；AI 生成題必須改寫成校本情境。
+- Practical / Skill Test 可公開 rubric，但不公開提示與完整解題步驟。
+
+${sections}
+`;
+}
+
+function buildAssessmentQuestionSet(assessment, plan) {
+  const text = `${assessment.title} ${plan.inputs.moduleTitle} ${plan.inputs.context}`.toLowerCase();
+  const endpointFocus = /eks|aws|endpoint|skill test|isakei/.test(text);
+  const ckaFocus = /cka|cluster|troubleshooting|admin/.test(text);
+  const ckadFocus = /ckad|yaml|workload|deployment|pod/.test(text);
+  return {
+    mcq: [
+      {
+        question: "在 Kubernetes troubleshooting 中，哪一項 evidence 最能幫助判斷 Pod 為何未能正常啟動？",
+        options: ["只看最終截圖", "`kubectl describe` 的 events 與 `kubectl logs`", "只提交 YAML 檔名", "只說明自己已重開機"],
+        answer: "B",
+        rationale: "events 和 logs 能指出 scheduling、image、runtime 或 application 層錯誤。",
+      },
+      {
+        question: endpointFocus
+          ? "若 service endpoint 必須公開，學生最少應提交哪一類證據？"
+          : "CKA 與 CKAD 題型最核心的差異是什麼？",
+        options: endpointFocus
+          ? ["桌面截圖", "URL、測試方法、expected response 與安全/cleanup 說明", "只提交課堂筆記", "只交 Git commit message"]
+          : ["CKA 側重 cluster/admin，CKAD 側重 application/workload", "CKA 不需要 kubectl", "CKAD 不需要 YAML", "兩者完全相同"],
+        answer: "B",
+        rationale: endpointFocus
+          ? "公開 endpoint 需要可由評核員重複驗收。"
+          : "兩者都用 Kubernetes，但成功標準和責任範圍不同。",
+      },
+      {
+        question: ckadFocus
+          ? "為什麼 assessment 要求提交 YAML artifact，而不只提交成功截圖？"
+          : "為什麼 Linux prerequisite 會影響 Kubernetes lab 成功率？",
+        options: ckadFocus
+          ? ["方便重現和審核 desired state", "YAML 只是裝飾", "截圖比 artifact 更可重現", "因為不用解釋指令"]
+          : ["因為 node、runtime、network、storage 問題會令 cluster 或 workload 失敗", "Linux 與 Kubernetes 無關", "只要有瀏覽器即可", "只要學生記得答案即可"],
+        answer: "A",
+        rationale: ckadFocus
+          ? "YAML 是 Kubernetes desired state 的核心證據。"
+          : "Kubernetes 依賴穩定的 Linux 與 network 基礎。",
+      },
+    ],
+    short: [
+      {
+        question: "請列出你會如何驗收一個 Kubernetes practical task 已完成。",
+        points: ["artifact 可重現", "kubectl output 或 endpoint response 清楚", "學生能解釋主要欄位或指令", "有錯誤排查或限制說明"],
+      },
+      {
+        question: ckaFocus
+          ? "Node NotReady 時，你會先查哪三類證據？"
+          : "提交 Lab evidence pack 時，哪些內容不能只靠截圖代替？",
+        points: ckaFocus
+          ? ["node condition", "kubelet / container runtime 狀態", "events、logs、network 或 resource pressure"]
+          : ["YAML / playbook artifact", "command log", "驗收方法", "錯誤與修正反思"],
+      },
+      {
+        question: "如何判斷一題 practical assessment 是否過度依賴提示？",
+        points: ["題目是否已暴露解題路徑", "rubric 是否只公開成功標準", "學生是否需要自行選擇 command / resource", "是否能用 evidence 驗收而非跟步驟打勾"],
+      },
+    ],
+    practical: [
+      {
+        task: endpointFocus
+          ? "部署一個 sample workload，公開 service endpoint，並提交 URL、expected response 與 cleanup record。"
+          : "根據指定情境建立或修復一個 Kubernetes resource，並提交 YAML、kubectl output 與排查記錄。",
+        evidence: ["YAML / command log", "kubectl get/describe/logs", "endpoint 或狀態截圖", "短答解釋"],
+        check: "評核員需要能在另一台環境或同一 cluster 重新驗收結果。",
+      },
+      {
+        task: "教師提供一個常見錯誤情境，學生需在 no-hint 條件下提出第一個檢查命令與修正方向。",
+        evidence: ["錯誤現象", "第一個檢查命令", "修正假設", "最終驗收 output"],
+        check: "重點不是背答案，而是排查路徑是否合理。",
+      },
+    ],
+  };
+}
+
+function buildAssessmentRubricRows(assessment) {
+  const isEa = assessment.type === "EA";
+  return [
+    {
+      criteria: "Correctness",
+      weight: isEa ? "35%" : "30%",
+      excellent: "結果完全符合 task，且能解釋關鍵設定",
+      pass: "主要結果正確，少量說明不足",
+      resubmit: "結果不可驗收或與題目要求不符",
+    },
+    {
+      criteria: "Reproducibility",
+      weight: isEa ? "20%" : "25%",
+      excellent: "artifact、步驟與環境資料可重做",
+      pass: "大致可重做，但缺少部分環境或版本資料",
+      resubmit: "只有截圖，不能重現",
+    },
+    {
+      criteria: "Troubleshooting evidence",
+      weight: "20%",
+      excellent: "有清楚 error、假設、command evidence 與修正",
+      pass: "有部分排查紀錄，但推理不完整",
+      resubmit: "沒有排查 evidence",
+    },
+    {
+      criteria: "Explanation / reflection",
+      weight: isEa ? "15%" : "15%",
+      excellent: "能連接概念、操作與 assessment criteria",
+      pass: "能描述做了什麼，但原因較薄弱",
+      resubmit: "不能解釋主要步驟",
+    },
+    {
+      criteria: "Security / cleanup",
+      weight: "10%",
+      excellent: "endpoint、權限、費用與 cleanup 都有交代",
+      pass: "有基本安全意識",
+      resubmit: "忽略公開 endpoint、權限或雲端費用風險",
+    },
+  ];
 }
 
 async function sendAnnualLectureToBuilder(index) {
@@ -1863,6 +2250,114 @@ function reviseScript(mode) {
   persistState();
 }
 
+async function completeScriptToTarget() {
+  if (!state.script) {
+    await generateScript();
+  }
+  const context = getScriptTargetContext();
+  let output = ensureCompleteLectureScript(state.script, context);
+  let guard = 0;
+
+  while (countWords(output) < context.targetWords && guard < 8) {
+    output = `${output}\n\n${buildScriptTargetExpansionBlock(context, guard)}`;
+    guard += 1;
+  }
+
+  state.script = appendScriptWordBudgetNote(output, context);
+  logAudit("講稿字數達標", `已補到 ${countWords(state.script)}/${context.targetWords} 字`);
+  renderScript();
+  markDriveBackupNeeded("講稿字數達標");
+  persistState();
+}
+
+function addCoreLectureDepth() {
+  if (!state.script) {
+    generateScript();
+    return;
+  }
+  const context = getScriptTargetContext();
+  state.script = [
+    state.script,
+    "",
+    buildScriptTargetExpansionBlock(context, 0),
+    "",
+    buildWorkedExampleDepthBlock(context),
+  ].join("\n");
+  logAudit("講稿補核心", `補充核心講授段落後共 ${countWords(state.script)} 字`);
+  renderScript();
+  markDriveBackupNeeded("講稿補核心");
+  persistState();
+}
+
+function getScriptTargetContext() {
+  const inputs = state.lastLessonInputs || getLessonInputs();
+  const minutes = clamp(Number(dom.scriptMinutes.value) || 60, 3, 180);
+  const budget = calculateBudget(minutes);
+  const wpm = calculateWpm();
+  const targetWords = Math.round(budget.core * wpm);
+  const material = clean(dom.materialText.value) || buildMaterialFromSlides();
+  const startPage = clamp(Number(dom.startPage.value) || 1, 1, 999);
+  const fragments = materialFragments(material, startPage, inputs);
+  return {
+    inputs,
+    fragments,
+    focusedMaterial: fragments.length ? fragments.join("\n\n") : material,
+    startPage,
+    minutes,
+    budget,
+    wpm,
+    targetWords,
+  };
+}
+
+function renderScriptGoal() {
+  if (!dom.scriptGoalStatus) return;
+  const context = getScriptTargetContext();
+  const words = countWords(state.script);
+  const percent = context.targetWords ? Math.min(100, Math.round((words / context.targetWords) * 100)) : 0;
+  const gap = Math.max(0, context.targetWords - words);
+  const status = words >= context.targetWords
+    ? "已達標，可進入教師審稿。"
+    : `尚差約 ${gap} 字；可按「補到目標字數」生成完整自學版。`;
+  dom.scriptGoalStatus.innerHTML = `
+    <div class="target-meter-row">
+      <div>
+        <span>講稿字數達標器</span>
+        <strong>${escapeHtml(words)} / ${escapeHtml(context.targetWords)} 字</strong>
+      </div>
+      <span>${escapeHtml(percent)}%</span>
+    </div>
+    <div class="target-bar"><span style="width:${percent}%"></span></div>
+    <small>${escapeHtml(status)}</small>
+  `;
+}
+
+function buildScriptTargetExpansionBlock(context, index) {
+  const fragments = context.fragments.length ? context.fragments : textToPages(context.focusedMaterial).map((page) => page.text).slice(0, 4);
+  const source = fragments[index % Math.max(fragments.length, 1)] || context.inputs.context || context.inputs.objective || context.inputs.topic;
+  const evidenceCue = inferScriptEvidenceCue(context.inputs);
+  return `【核心講授補足 ${index + 1}｜可直接給學生自學】\n
+這一段用來把「${context.inputs.topic}」講得更完整。請先記住一個原則：學生不是只需要知道名詞，而是需要知道名詞背後的判斷方法。當你看到教材或投影片出現一個概念時，請先問三件事。第一，這個概念解決什麼問題？第二，它依賴哪些先備條件？第三，如果結果不符合預期，我可以用什麼 evidence 證明問題在哪一層？\n
+本段素材重點是：${String(source).replace(/\s+/g, " ").slice(0, 520)}\n
+以技術課堂來說，最有價值的學習不是把指令背下來，而是能把「情境、操作、證據、解釋」串成一條線。例如學生做完一個 Kubernetes 任務後，不應只提交截圖，而要說明使用了哪個 YAML、哪個 kubectl 指令、看到什麼 output、這個 output 如何證明任務完成。這樣的寫法可以直接服務 CA Lab、CKA/CKAD 練習和期末 Skill Test。\n
+對學生而言，本課的最低要求是能跟着步驟完成；較高要求是能解釋為什麼這樣做；最高要求是遇到錯誤時能提出排查假設。請用以下問題自我檢查：如果我只能保留三句話，我會如何解釋這頁？如果 demo 失敗，我第一個會查什麼？如果這題變成評核，老師應該如何用 ${evidenceCue} 驗收？`;
+}
+
+function buildWorkedExampleDepthBlock(context) {
+  const topic = context.inputs.topic;
+  return `【Worked Example｜從課堂講解轉成學生可理解的步驟】\n
+假設你現在要完成一個與「${topic}」相關的任務，不要先急着找答案。第一步是重寫任務要求，把它改成可驗收句子，例如「我需要建立某個 resource，並用指定 command 證明它已經運作」。第二步是列出你要看的證據，例如 status、events、logs、endpoint response、YAML spec 或版本資訊。第三步才是執行操作。這個順序能避免學生只照抄命令，卻不知道命令成功代表什麼。\n
+如果這堂課之後要接 CA Lab，請把本段轉成 Lab evidence checklist。如果之後要接 Assessment，請把它轉成 marking rubric：正確性、可重現性、排錯證據、解釋能力和安全意識。這樣講稿不只是口頭稿，也能變成學生課後閱讀和做功課的路線圖。`;
+}
+
+function inferScriptEvidenceCue(inputs) {
+  const text = `${inputs.topic} ${inputs.subject} ${inputs.context}`.toLowerCase();
+  if (/kubernetes|cka|ckad|kubectl|yaml/.test(text)) return "kubectl output、YAML、logs 與 endpoint";
+  if (/linux|vm|server/.test(text)) return "terminal output、service status 與系統設定截圖";
+  if (/aws|eks|cloud/.test(text)) return "AWS console 記錄、endpoint 測試與 cleanup record";
+  return "截圖、短答、操作紀錄與反思";
+}
+
 function ensureCompleteLectureScript(script, context) {
   const minimumWords = Math.max(600, Math.round(context.targetWords * 0.92));
   let output = normalizeLectureScriptForStudents(script, context);
@@ -1909,7 +2404,8 @@ function normalizeLectureScriptForStudents(script, context) {
 function appendScriptWordBudgetNote(script, context) {
   const words = countWords(script);
   const note = `\n\n【字數與使用方式】\n目前講稿約 ${words} 字；目標核心講授字數約 ${context.targetWords} 字。若課堂時間不足，可先刪減「延伸閱讀」或「自我檢查」段落；若學生自學，建議完整閱讀並完成每段 checkpoint。`;
-  return script.includes("【字數與使用方式】") ? script : `${script}${note}`;
+  const withoutOldNote = String(script || "").replace(/\n\n【字數與使用方式】[\s\S]*$/u, "");
+  return `${withoutOldNote}${note}`;
 }
 
 function buildSelfStudyExpansion(context, deficit) {
@@ -1991,6 +2487,7 @@ function buildAdditionalDeepeningBlock(context, currentWords, targetWords) {
 
 function renderScript() {
   dom.scriptOutput.value = state.script || "";
+  renderScriptGoal();
   renderStatus();
 }
 
@@ -2019,6 +2516,7 @@ function renderTimeBudget() {
   dom.wpmStatus.textContent = String(wpm);
   dom.coreMinutesStatus.textContent = `${formatNumber(budget.core)} 分`;
   dom.targetWordsStatus.textContent = String(targetWords);
+  renderScriptGoal();
 }
 
 async function sendAssistantMessage() {
@@ -2302,8 +2800,12 @@ function saveVersion() {
     name: `${inputs.topic}｜${new Date().toLocaleString("zh-Hant")}`,
     createdAt: new Date().toISOString(),
     inputs,
+    annualPlan: structuredCloneSafe(state.annualPlan),
     slides: structuredCloneSafe(state.slides),
     script: state.script,
+    assessmentBank: structuredCloneSafe(state.assessmentBank),
+    materialPages: structuredCloneSafe(state.materialPages),
+    auditLog: structuredCloneSafe(state.auditLog),
   };
   state.versions.unshift(version);
   state.versions = state.versions.slice(0, 12);
@@ -2345,16 +2847,19 @@ function renderVersions() {
 
   dom.versionList.innerHTML = state.versions
     .map(
-      (version, index) => `
+      (version, index) => {
+        const stats = getVersionStats(version);
+        return `
         <article class="version-item">
           <strong>${escapeHtml(version.name)}</strong>
-          <span>${version.slides.length} 頁教材 · ${countWords(version.script)} 字講稿</span>
+          <span>${stats.slideCount} 頁教材 · ${stats.scriptWords} 字講稿 · ${stats.generatedLabs}/${stats.labCount} Lab · ${stats.generatedAssessments}/${stats.assessmentCount} 評核</span>
           <div class="version-actions">
             <button type="button" data-restore-version="${index}">還原</button>
             <button type="button" data-compare-version="${index}">比較</button>
           </div>
         </article>
-      `,
+      `;
+      },
     )
     .join("");
 
@@ -2427,8 +2932,13 @@ function restoreVersion(index) {
   const version = state.versions[index];
   if (!version) return;
   state.lastLessonInputs = version.inputs;
+  if ("annualPlan" in version) {
+    state.annualPlan = version.annualPlan ? structuredCloneSafe(version.annualPlan) : null;
+  }
   state.slides = structuredCloneSafe(version.slides);
   state.script = version.script;
+  state.assessmentBank = version.assessmentBank ? structuredCloneSafe(version.assessmentBank) : null;
+  state.materialPages = structuredCloneSafe(version.materialPages || state.materialPages || []);
   setFormInputs(version.inputs);
   dom.assistantContext.value = buildAssistantContext();
   renderAll();
@@ -2438,19 +2948,112 @@ function restoreVersion(index) {
 function compareVersion(index) {
   const version = state.versions[index];
   if (!version) return;
-  const currentTitles = state.slides.map((slide) => slide.title);
-  const previousTitles = version.slides.map((slide) => slide.title);
-  const added = currentTitles.filter((title) => !previousTitles.includes(title));
-  const removed = previousTitles.filter((title) => !currentTitles.includes(title));
+  const current = buildComparableSnapshot({
+    inputs: state.lastLessonInputs || getLessonInputs(),
+    annualPlan: state.annualPlan,
+    slides: state.slides,
+    script: state.script,
+    assessmentBank: state.assessmentBank,
+  });
+  const previous = buildComparableSnapshot(version);
+  const slideDiff = diffLists(current.slideTitles, previous.slideTitles);
+  const changedSlides = countChangedSlides(current.slides, previous.slides);
+  const labDiff = diffLists(current.labTitles, previous.labTitles);
+  const assessmentDiff = diffLists(current.assessmentTitles, previous.assessmentTitles);
+  const riskNotes = buildVersionRiskNotes(current, previous, changedSlides);
 
-  dom.compareBox.textContent = [
-    `版本：${version.name}`,
-    `目前頁數：${state.slides.length}｜版本頁數：${version.slides.length}`,
-    `目前講稿字數：${countWords(state.script)}｜版本講稿字數：${countWords(version.script)}`,
-    "",
-    `新增標題：${added.length ? added.join("、") : "無"}`,
-    `移除標題：${removed.length ? removed.join("、") : "無"}`,
-  ].join("\n");
+  dom.compareBox.innerHTML = `
+    <div class="compare-heading">
+      <div>
+        <span>Version Compare</span>
+        <strong>${escapeHtml(version.name)}</strong>
+      </div>
+      <small>${escapeHtml(new Date(version.createdAt || Date.now()).toLocaleString("zh-Hant"))}</small>
+    </div>
+    <div class="compare-metrics">
+      ${compareMetric("PPT 頁數", current.stats.slideCount, previous.stats.slideCount)}
+      ${compareMetric("講稿字數", current.stats.scriptWords, previous.stats.scriptWords)}
+      ${compareMetric("已生成 Lab", current.stats.generatedLabs, previous.stats.generatedLabs)}
+      ${compareMetric("Assessment 內容", current.stats.generatedAssessments, previous.stats.generatedAssessments)}
+    </div>
+    <div class="compare-sections">
+      ${compareSection("新增 PPT 標題", slideDiff.added)}
+      ${compareSection("移除 PPT 標題", slideDiff.removed)}
+      ${compareSection("Lab 變化", [...labDiff.added.map((item) => `新增：${item}`), ...labDiff.removed.map((item) => `移除：${item}`)])}
+      ${compareSection("Assessment 變化", [...assessmentDiff.added.map((item) => `新增：${item}`), ...assessmentDiff.removed.map((item) => `移除：${item}`)])}
+      ${compareSection("需要教師留意", riskNotes)}
+    </div>
+    <p class="compare-footnote">內容相同標題但 prompt / notes 改動：${escapeHtml(changedSlides)} 頁。比較後如要保留目前草稿，請按「儲存版本」。</p>
+  `;
+}
+
+function getVersionStats(version) {
+  const annualPlan = version?.annualPlan || {};
+  const labs = Array.isArray(annualPlan.labs) ? annualPlan.labs : [];
+  const assessments = Array.isArray(annualPlan.assessments) ? annualPlan.assessments : [];
+  return {
+    slideCount: version?.slides?.length || 0,
+    scriptWords: countWords(version?.script || ""),
+    labCount: labs.length,
+    generatedLabs: labs.filter((lab) => lab.generatedContent).length,
+    assessmentCount: assessments.length,
+    generatedAssessments: assessments.filter((item) => item.generatedContent).length,
+  };
+}
+
+function buildComparableSnapshot(source) {
+  const annualPlan = source.annualPlan || {};
+  const labs = Array.isArray(annualPlan.labs) ? annualPlan.labs : [];
+  const assessments = Array.isArray(annualPlan.assessments) ? annualPlan.assessments : [];
+  const slides = Array.isArray(source.slides) ? source.slides : [];
+  return {
+    inputs: source.inputs || {},
+    annualPlan,
+    slides,
+    slideTitles: slides.map((slide) => slide.title).filter(Boolean),
+    labTitles: labs.map((lab) => `${lab.id || ""} ${lab.title || ""}`.trim()).filter(Boolean),
+    assessmentTitles: assessments.map((item) => `${item.type || ""} ${item.title || ""}`.trim()).filter(Boolean),
+    stats: getVersionStats(source),
+  };
+}
+
+function diffLists(current, previous) {
+  return {
+    added: current.filter((item) => !previous.includes(item)),
+    removed: previous.filter((item) => !current.includes(item)),
+  };
+}
+
+function countChangedSlides(currentSlides, previousSlides) {
+  const previousByTitle = new Map(previousSlides.map((slide) => [slide.title, hashString(`${slide.notes || ""}\n${slide.activity || ""}`)]));
+  return currentSlides.filter((slide) => {
+    const previousHash = previousByTitle.get(slide.title);
+    return previousHash && previousHash !== hashString(`${slide.notes || ""}\n${slide.activity || ""}`);
+  }).length;
+}
+
+function buildVersionRiskNotes(current, previous, changedSlides) {
+  const notes = [];
+  if (current.stats.scriptWords < previous.stats.scriptWords) notes.push("目前講稿較舊版本短，請確認是否仍達到目標字數。");
+  if (current.stats.generatedLabs < previous.stats.generatedLabs) notes.push("目前已生成 Lab 數量較少，可能漏了部分 Lab brief / rubric。");
+  if (current.stats.generatedAssessments < previous.stats.generatedAssessments) notes.push("目前 Assessment 題庫或 rubric 較舊版本少。");
+  if (changedSlides > 0) notes.push(`${changedSlides} 頁 PPT 標題相同但 prompt / notes 已改，建議抽查品質。`);
+  if (!notes.length) notes.push("未見明顯風險；可按需要保存目前版本。");
+  return notes;
+}
+
+function compareMetric(label, current, previous) {
+  const diff = Number(current || 0) - Number(previous || 0);
+  const sign = diff > 0 ? "+" : "";
+  const tone = diff > 0 ? "positive" : diff < 0 ? "negative" : "neutral";
+  return `<div class="compare-metric ${tone}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(current)}</strong><small>${escapeHtml(sign + diff)} vs 版本</small></div>`;
+}
+
+function compareSection(title, items) {
+  const content = items.length
+    ? `<ul>${items.slice(0, 8).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "<p>無</p>";
+  return `<section><strong>${escapeHtml(title)}</strong>${content}</section>`;
 }
 
 function exportProjectJson() {
@@ -2800,7 +3403,7 @@ function buildProjectPayload(source = "manual") {
   const inputs = state.lastLessonInputs || getLessonInputs();
   return {
     schema: "eduscript-ai-project",
-    schemaVersion: 3,
+    schemaVersion: 4,
     app: "EduScript AI Studio",
     source,
     exportedAt: new Date().toISOString(),
@@ -2820,6 +3423,7 @@ function buildProjectPayload(source = "manual") {
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
     qaMetrics: state.qaMetrics,
+    assessmentBank: state.assessmentBank,
     gamma: state.gamma,
     interviewAnswers: state.interviewAnswers,
     role: state.role,
@@ -2844,6 +3448,7 @@ function applyProjectPayload(payload, sourceLabel = "備份") {
   state.messages = payload.messages || state.messages || [];
   state.auditLog = payload.auditLog || [];
   state.publishedRevision = payload.publishedRevision || null;
+  state.assessmentBank = payload.assessmentBank || payload.annualPlan?.assessmentBank || null;
   state.studentQa = payload.studentQa || {
     question: "",
     answer: "",
@@ -3219,6 +3824,7 @@ function clearProject() {
   state.messages = [];
   state.auditLog = [];
   state.publishedRevision = null;
+  state.assessmentBank = null;
   state.studentQa = {
     question: "",
     answer: "",
@@ -3802,6 +4408,8 @@ ${labs}
 
 ${assessments}
 
+${plan.assessmentBank?.markdown ? `## Assessment 題庫總表\n\n${plan.assessmentBank.markdown}` : ""}
+
 ## 合規與品質提醒
 
 ${plan.complianceNotes.map((item) => `- ${item}`).join("\n")}
@@ -3852,6 +4460,7 @@ function persistState() {
     publishedRevision: state.publishedRevision,
     studentQa: state.studentQa,
     qaMetrics: state.qaMetrics,
+    assessmentBank: state.assessmentBank,
     interviewAnswers: state.interviewAnswers,
     role: state.role,
     lastLessonInputs: state.lastLessonInputs,
@@ -3877,6 +4486,7 @@ function restoreState() {
     state.messages = payload.messages || [];
     state.auditLog = payload.auditLog || [];
     state.publishedRevision = payload.publishedRevision || null;
+    state.assessmentBank = payload.assessmentBank || payload.annualPlan?.assessmentBank || null;
     state.studentQa = payload.studentQa || state.studentQa;
     state.qaMetrics = payload.qaMetrics || state.qaMetrics;
     state.gamma.lastGeneration = payload.gamma?.lastGeneration || state.gamma.lastGeneration;
@@ -3982,6 +4592,7 @@ function cryptoId() {
 }
 
 function structuredCloneSafe(value) {
+  if (value == null) return value;
   if (window.structuredClone) return window.structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
