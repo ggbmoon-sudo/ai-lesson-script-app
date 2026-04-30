@@ -61,7 +61,7 @@ const lessonSchema = {
     slides: {
       type: "array",
       minItems: 8,
-      maxItems: 16,
+      maxItems: 80,
       items: {
         type: "object",
         additionalProperties: false,
@@ -1695,7 +1695,7 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
     lecture_pptx_summary_outcomes: 1024,
     lecture_pptx_summary_design: 1536,
     lecture_pptx_checklist_chunk: 4096,
-    lesson_plan: 4096,
+    lesson_plan: 8192,
     lab_content_markdown: 4096,
     assessment_content_markdown: 4096,
     script_revision: 8192,
@@ -1717,7 +1717,7 @@ function getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens) {
     lecture_pptx_summary_outcomes: 768,
     lecture_pptx_summary_design: 1024,
     lecture_pptx_checklist_chunk: 2048,
-    lesson_plan: 2048,
+    lesson_plan: 8192,
     lab_content_markdown: 2048,
     assessment_content_markdown: 2048,
     script_revision: 4096,
@@ -2311,12 +2311,17 @@ ${feedback || ""}`;
 }
 
 function buildLessonPrompt({ inputs }) {
+  const slideTarget = normalizePositiveInteger(inputs?.slideTarget || inputs?.slide_target || inputs?.pptSlides);
+  const slideTargetRule = slideTarget
+    ? `4. Hard requirement: slides array length must be exactly ${slideTarget}. Do not stop at 12-14 pages. For a ${inputs.duration}-minute technical deck, split concept, demo, checkpoint, troubleshooting, lab bridge, assessment, summary and references into enough distinct pages to reach ${slideTarget}.`
+    : "4. 若時長約 60 分鐘、技術實作或 exam-oriented，主 deck 建議 12-14 頁；必須包含 demo、exercise、assessment、comparison 或 pitfalls。";
   return `請生成一份專業 PPT deck 生成規格。請把「課程訪談資料」先正規化成 course_json，再用教學設計規則與投影片模板庫編譯成逐頁 PPT Prompt。不要直接把訪談文字改寫成鬆散投影片。
 
 課題：${inputs.topic}
 科目：${inputs.subject}
 對象：${inputs.audience}
 分鐘：${inputs.duration}
+PPT slide target：${slideTarget || "auto"}
 風格：${inputs.style}
 學習目標：${inputs.objective}
 先備知識與班情：${inputs.context}
@@ -2327,7 +2332,7 @@ Bloom 層次：${(inputs.bloom || []).join(", ")}
 1. 先建立 course_json：title、subject_domain、audience_profile、duration_min、style、objectives[]、prerequisites[]、bloom_levels[]、external_refs[]、source_completeness。
 2. 用 backward design 對齊 learning objectives、assessment touchpoints 與 instructional strategies。
 3. 依 slide template catalog 選擇頁型：title、prerequisite、objectives、agenda、content、example、demo、exercise、comparison、pitfalls、assessment、summary、references。
-4. 若時長約 60 分鐘、技術實作或 exam-oriented，主 deck 建議 12-14 頁；必須包含 demo、exercise、assessment、comparison 或 pitfalls。
+${slideTargetRule}
 5. 每頁 notes 必須是可交給 Gamma / PPT AI 的單頁 prompt，包含 slide_title、slide_subtitle、slide_body、speaker_notes、suggested_visual、suggested_layout、presenter_cues、fact_check_points。
 
 投影片可讀性與可及性限制：

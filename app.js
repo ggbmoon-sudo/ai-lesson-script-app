@@ -253,6 +253,7 @@ const wpmProfiles = {
 
 const state = {
   annualPlan: null,
+  pendingLessonSlideTarget: null,
   slides: [],
   script: "",
   questions: [],
@@ -691,7 +692,7 @@ function getLessonInputs() {
     .filter((input) => input.checked)
     .map((input) => input.value);
 
-  return {
+  const inputs = {
     topic: clean(dom.topic.value) || "未命名課題",
     subject: clean(dom.subject.value) || "跨學科",
     audience: clean(dom.audience.value) || "學生",
@@ -702,6 +703,34 @@ function getLessonInputs() {
     interviewAnswers: clean(dom.questionAnswer?.value || state.interviewAnswers),
     bloom: selectedBloom.length ? selectedBloom : ["remember", "understand", "analyze"],
   };
+  inputs.slideTarget = inferLessonSlideTarget(inputs, state.pendingLessonSlideTarget);
+  return inputs;
+}
+
+function inferLessonSlideTarget(inputs, explicitTarget = null) {
+  const explicit = Number(explicitTarget || inputs?.slideTarget || inputs?.slide_target || inputs?.pptSlides);
+  if (Number.isFinite(explicit) && explicit > 0) return clamp(Math.round(explicit), 6, 80);
+
+  const text = [
+    inputs?.context,
+    inputs?.objective,
+    inputs?.interviewAnswers,
+  ].filter(Boolean).join("\n");
+
+  const patterns = [
+    /slide[_\s-]*target["'\s:：]+(\d{1,2})/i,
+    /PPT\s*slide\s*target["'\s:：]+(\d{1,2})/i,
+    /PPT\s*(?:slides?|頁數|頁)["'\s:：]+(\d{1,2})/i,
+    /(?:^|\D)(\d{1,2})\s*slides\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const value = Number(match?.[1]);
+    if (Number.isFinite(value) && value > 0) return clamp(Math.round(value), 6, 80);
+  }
+
+  return 0;
 }
 
 function getAnnualInputs() {
@@ -1886,6 +1915,7 @@ function splitPlanItems(value) {
 
 async function generateLesson() {
   const inputs = getLessonInputs();
+  state.pendingLessonSlideTarget = null;
   state.interviewAnswers = inputs.interviewAnswers || "";
   state.lastLessonInputs = inputs;
   setAiBusy(true, "生成教材中");
@@ -1912,7 +1942,7 @@ async function generateLesson() {
   if (!generated) {
     renderStatus();
     persistState();
-    return;
+    return false;
   }
 
   dom.duration.value = inputs.duration;
@@ -1923,12 +1953,15 @@ async function generateLesson() {
   renderAll();
   markDriveBackupNeeded("教材生成");
   persistState();
+  return true;
 }
 
 function normalizeAiSlides(slides, inputs) {
   const fallbackPlan = buildPptDeckPlan(inputs);
-  const fallbackMinutes = distributeMinutes(inputs.duration, slides.map(() => 1 / Math.max(slides.length, 1)));
-  return slides.map((slide, index) => {
+  const targetCount = inferLessonSlideTarget(inputs) || slides.length;
+  const selectedSlides = slides.slice(0, targetCount);
+  const fallbackMinutes = distributeMinutes(inputs.duration, Array.from({ length: targetCount }, () => 1 / Math.max(targetCount, 1)));
+  const normalized = selectedSlides.map((slide, index) => {
     const fallback = fallbackPlan[index] || fallbackPlan[index % fallbackPlan.length];
     const slideType = clean(slide.slideType || slide.type) || fallback?.slideType || "content";
     const template = pptTemplateCatalog[slideType] || pptTemplateCatalog.content;
@@ -1974,6 +2007,10 @@ function normalizeAiSlides(slides, inputs) {
       }),
     };
   });
+  while (normalized.length < targetCount) {
+    normalized.push(buildSlideFromDeckPlan(fallbackPlan[normalized.length] || fallbackPlan[normalized.length % fallbackPlan.length], inputs, normalized.length));
+  }
+  return normalized.map((slide, index) => ({ ...slide, number: index + 1 }));
 }
 
 function buildSlideFromDeckPlan(plan, inputs, index) {
@@ -2021,17 +2058,18 @@ function buildPptDeckPlan(inputs) {
   const examOrTech = isExamOrTechnicalCourse(inputs);
   const selected = new Set(inputs.bloom || []);
   const longDeck = inputs.duration >= 50 || examOrTech;
-  const sequence = longDeck
+  const baseSequence = longDeck
     ? ["title", "prerequisite", "objectives", "agenda", "content", "content", "example", "demo", "comparison", "pitfalls", "exercise", "assessment", "summary", "references"]
     : ["title", "objectives", "agenda", "content", "example", selected.has("apply") ? "demo" : "content", selected.has("apply") ? "exercise" : "assessment", "summary"];
 
-  if (!sequence.includes("comparison") && (selected.has("analyze") || selected.has("evaluate"))) {
-    sequence.splice(Math.max(4, sequence.length - 2), 0, "comparison");
+  if (!baseSequence.includes("comparison") && (selected.has("analyze") || selected.has("evaluate"))) {
+    baseSequence.splice(Math.max(4, baseSequence.length - 2), 0, "comparison");
   }
-  if (!sequence.includes("assessment") && (selected.has("evaluate") || examOrTech)) {
-    sequence.splice(Math.max(5, sequence.length - 1), 0, "assessment");
+  if (!baseSequence.includes("assessment") && (selected.has("evaluate") || examOrTech)) {
+    baseSequence.splice(Math.max(5, baseSequence.length - 1), 0, "assessment");
   }
 
+  const sequence = expandPptSequenceToTarget(baseSequence, inferLessonSlideTarget(inputs), examOrTech);
   const weights = sequence.map((type) => pptTemplateCatalog[type]?.weight || 0.08);
   const minutes = distributeMinutes(inputs.duration, normalizeWeights(weights));
   return sequence.map((slideType, index) => {
@@ -2044,6 +2082,29 @@ function buildPptDeckPlan(inputs) {
       suggestedVisual: template.visual,
     };
   });
+}
+
+function expandPptSequenceToTarget(sequence, slideTarget, examOrTech) {
+  const target = Number(slideTarget) ? clamp(Math.round(Number(slideTarget)), 6, 80) : sequence.length;
+  if (target <= sequence.length) return sequence.slice(0, target);
+
+  const tail = [];
+  const body = [...sequence];
+  while (["summary", "references"].includes(body[body.length - 1])) {
+    tail.unshift(body.pop());
+  }
+
+  const expansionPattern = examOrTech
+    ? ["content", "demo", "content", "example", "pitfalls", "exercise", "comparison", "assessment"]
+    : ["content", "example", "content", "exercise", "comparison", "assessment"];
+
+  let pointer = 0;
+  while (body.length + tail.length < target) {
+    body.push(expansionPattern[pointer % expansionPattern.length]);
+    pointer += 1;
+  }
+
+  return [...body, ...tail].slice(0, target);
 }
 
 function normalizeWeights(weights) {
@@ -3186,10 +3247,12 @@ async function sendAnnualLectureToBuilder(index) {
     subject: state.annualPlan.inputs.moduleTitle,
     audience: state.annualPlan.inputs.audience,
     duration: clamp(unit.videoMinutes, 10, 180),
+    slideTarget: unit.pptSlides,
     style: "考試導向",
     objective: (unit.outcomes || []).join("；"),
     context: [
       state.annualPlan.inputs.context,
+      `PPT slide target：${unit.pptSlides}`,
       `PPT deck：${unit.deckName}`,
       `Template：${unit.templateId || unit.metadata?.template_id || "LT-CORE"}`,
       `Teaching flow：${unit.recordingCue || ""}`,
@@ -3203,11 +3266,13 @@ async function sendAnnualLectureToBuilder(index) {
     bloom: ["understand", "apply", "analyze", "evaluate"],
   };
 
+  state.pendingLessonSlideTarget = unit.pptSlides;
   setFormInputs(inputs);
   dom.scriptMinutes.value = String(Math.max(10, Math.round(unit.videoMinutes)));
   syncDefaultCoreMinutes(true);
   switchView("builder");
-  await generateLesson();
+  const generated = await generateLesson();
+  if (!generated) return;
   sendSlidesToScriptMaterial();
   unit.pptxChecklistStatus = {
     state: "sent",
