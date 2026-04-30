@@ -254,6 +254,7 @@ const wpmProfiles = {
 const state = {
   annualPlan: null,
   pendingLessonSlideTarget: null,
+  lessonGeneration: null,
   slides: [],
   script: "",
   questions: [],
@@ -320,7 +321,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAppConfig();
   restoreState();
   await checkAiHealth();
-  if (!state.slides.length && state.ai.enabled) {
+  if (!state.slides.length && !state.lessonGeneration && state.ai.enabled) {
     await generateLesson();
   }
   renderAll();
@@ -1940,6 +1941,7 @@ async function generateLesson() {
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
       state.script = "";
       state.slideJson = [];
+      state.lessonGeneration = null;
       logAudit("教材生成", `${formatAiProviderName(state.ai.provider)} 生成 ${state.slides.length} 頁教材草稿`);
       if (Array.isArray(aiLesson.generationWarnings) && aiLesson.generationWarnings.length) {
         const warningText = `AI 已生成 ${state.slides.length} 頁，但有分段重試：${aiLesson.generationWarnings.slice(0, 3).join("；")}`;
@@ -1953,9 +1955,12 @@ async function generateLesson() {
   } catch (error) {
     console.warn(error);
     generationError = `AI 教材生成失敗：${error.message}`;
-    if (dom.compareBox) dom.compareBox.textContent = previousHadSlides
-      ? `${generationError}\n已保留畫面上的舊教材，請重試或縮小頁數。`
-      : generationError;
+    const partialSlides = state.lessonGeneration?.slides?.length || 0;
+    if (dom.compareBox) dom.compareBox.textContent = partialSlides
+      ? `${generationError}\n已暫存 ${partialSlides}/${state.lessonGeneration.slideTarget || "?"} 頁；Codespaces 重啟後再按「生成教材」會繼續補未完成頁。`
+      : previousHadSlides
+        ? `${generationError}\n已保留畫面上的舊教材，請重試或縮小頁數。`
+        : generationError;
     logAudit("教材生成", generationError);
   } finally {
     setAiBusy(false);
@@ -1963,7 +1968,8 @@ async function generateLesson() {
 
   if (!generated) {
     renderAll();
-    if (!previousHadSlides && dom.slideGrid) dom.slideGrid.innerHTML = emptyText(`${generationError || "AI 教材生成失敗，沒有產生 slides。"} 請檢查 /api/ai/diagnostics?live=1 或稍後重試。`);
+    const partialSlides = state.lessonGeneration?.slides?.length || 0;
+    if (!previousHadSlides && dom.slideGrid) dom.slideGrid.innerHTML = emptyText(`${generationError || "AI 教材生成失敗，沒有產生 slides。"}${partialSlides ? ` 已暫存 ${partialSlides}/${state.lessonGeneration.slideTarget || "?"} 頁，再按「生成教材」可繼續。` : " 請檢查 /api/ai/diagnostics?live=1 或稍後重試。"}`);
     renderStatus();
     persistState();
     return false;
@@ -1992,30 +1998,55 @@ async function generateLessonAiPayload(inputs) {
 
 async function generateLessonByClientChunks(originalInputs, aiInputs, slideTarget) {
   const ranges = getLectureChecklistRanges(slideTarget, 3);
-  const questions = await requestLessonQuestions(aiInputs);
-  const warnings = [];
-  const slides = [];
+  const generationKey = makeLessonGenerationKey(originalInputs, slideTarget);
+  const progress = getReusableLessonGeneration(generationKey, slideTarget) || {
+    key: generationKey,
+    status: "running",
+    slideTarget,
+    slides: [],
+    questions: [],
+    warnings: [],
+    completedRanges: [],
+    createdAt: new Date().toISOString(),
+  };
+  progress.status = "running";
+  progress.inputSummary = `${originalInputs.topic || "Untitled"} / ${slideTarget} slides`;
+  saveLessonGenerationProgress(progress);
+
+  if (!Array.isArray(progress.questions) || !progress.questions.length) {
+    progress.questions = await requestLessonQuestions(aiInputs);
+    saveLessonGenerationProgress(progress);
+  }
 
   for (const range of ranges) {
+    if (lessonGenerationRangeComplete(progress, range)) {
+      setAiBusy(true, `已暫存教材 ${range.startSlide}-${range.endSlide}/${slideTarget}`);
+      continue;
+    }
+
     setAiBusy(true, `生成教材 ${range.startSlide}-${range.endSlide}/${slideTarget}`);
     try {
       const chunkSlides = await requestLessonSlideRange(originalInputs, aiInputs, slideTarget, range);
-      slides.push(...chunkSlides);
+      mergeLessonGenerationSlides(progress, chunkSlides, range);
     } catch (error) {
-      warnings.push(`slides ${range.startSlide}-${range.endSlide}: ${error.message || "failed"}`);
-      const recovered = await requestLessonSlidesOneByOne(originalInputs, aiInputs, slideTarget, range, warnings);
-      slides.push(...recovered);
+      progress.warnings.push(`slides ${range.startSlide}-${range.endSlide}: ${error.message || "failed"}`);
+      const recovered = await requestLessonSlidesOneByOne(originalInputs, aiInputs, slideTarget, range, progress.warnings);
+      mergeLessonGenerationSlides(progress, recovered, range);
     }
+    saveLessonGenerationProgress(progress);
   }
 
+  const slides = getLessonGenerationSlides(progress, slideTarget);
   if (slides.length < slideTarget) {
     throw new Error(`AI 只完成 ${slides.length}/${slideTarget} 頁；已停止覆蓋舊教材。`);
   }
 
+  progress.status = "done";
+  saveLessonGenerationProgress(progress);
   return {
-    questions,
+    questions: progress.questions || [],
     slides: slides.slice(0, slideTarget),
-    generationWarnings: warnings,
+    generationWarnings: progress.warnings || [],
   };
 }
 
@@ -2043,7 +2074,10 @@ async function requestLessonSlideRange(originalInputs, aiInputs, slideTarget, ra
   if (slides.length < expected) {
     throw new Error(`AI 只返回 ${slides.length}/${expected} 頁`);
   }
-  return slides;
+  return slides.map((slide, index) => ({
+    ...slide,
+    __generatedSlideNo: range.startSlide + index,
+  }));
 }
 
 async function requestLessonSlidesOneByOne(originalInputs, aiInputs, slideTarget, range, warnings) {
@@ -2069,6 +2103,77 @@ function buildLessonChunkBlueprints(inputs, range) {
     purpose: plan.activity || plan.suggestedLayout || "",
     minutes: plan.minutes || "",
   }));
+}
+
+function makeLessonGenerationKey(inputs, slideTarget) {
+  return hashString(JSON.stringify({
+    topic: clean(inputs.topic),
+    subject: clean(inputs.subject),
+    audience: clean(inputs.audience),
+    duration: Number(inputs.duration) || 0,
+    slideTarget,
+    objective: stripPromptNoise(inputs.objective, 900),
+    context: stripPromptNoise(inputs.context, 900),
+    interviewAnswers: stripPromptNoise(inputs.interviewAnswers, 600),
+    bloom: Array.isArray(inputs.bloom) ? inputs.bloom.slice().sort() : [],
+  }));
+}
+
+function getReusableLessonGeneration(key, slideTarget) {
+  const progress = state.lessonGeneration;
+  if (!progress || progress.key !== key || Number(progress.slideTarget) !== Number(slideTarget)) return null;
+  progress.slides = Array.isArray(progress.slides) ? progress.slides : [];
+  progress.questions = Array.isArray(progress.questions) ? progress.questions : [];
+  progress.warnings = Array.isArray(progress.warnings) ? progress.warnings : [];
+  progress.completedRanges = Array.isArray(progress.completedRanges) ? progress.completedRanges : [];
+  return progress;
+}
+
+function lessonGenerationRangeComplete(progress, range) {
+  const expected = range.endSlide - range.startSlide + 1;
+  const count = (progress.slides || []).filter((slide) => {
+    const number = Number(slide.__generatedSlideNo || slide.number);
+    return number >= range.startSlide && number <= range.endSlide;
+  }).length;
+  return count >= expected;
+}
+
+function mergeLessonGenerationSlides(progress, incomingSlides, range) {
+  const slides = Array.isArray(incomingSlides) ? incomingSlides : [];
+  if (!slides.length) return;
+  const kept = (progress.slides || []).filter((slide) => {
+    const number = Number(slide.__generatedSlideNo || slide.number);
+    return number < range.startSlide || number > range.endSlide;
+  });
+  progress.slides = [...kept, ...slides].sort(compareGeneratedSlides);
+  const key = `${range.startSlide}-${range.endSlide}`;
+  if (!progress.completedRanges.includes(key) && lessonGenerationRangeComplete(progress, range)) {
+    progress.completedRanges.push(key);
+  }
+}
+
+function getLessonGenerationSlides(progress, slideTarget) {
+  return (progress.slides || [])
+    .slice()
+    .sort(compareGeneratedSlides)
+    .slice(0, slideTarget)
+    .map((slide) => {
+      const { __generatedSlideNo, ...publicSlide } = slide;
+      return publicSlide;
+    });
+}
+
+function compareGeneratedSlides(a, b) {
+  return Number(a.__generatedSlideNo || a.number || 0) - Number(b.__generatedSlideNo || b.number || 0);
+}
+
+function saveLessonGenerationProgress(progress) {
+  progress.updatedAt = new Date().toISOString();
+  state.lessonGeneration = progress;
+  if (dom.compareBox && progress.status === "running") {
+    dom.compareBox.textContent = `教材生成暫存中：已完成 ${progress.slides.length}/${progress.slideTarget} 頁。若 Codespaces 重啟，再按「生成教材」會繼續補未完成頁。`;
+  }
+  persistState();
 }
 
 function compactLessonAiInputs(inputs) {
@@ -5893,6 +5998,7 @@ function clearProject() {
   localStorage.removeItem(STORAGE_KEY);
   state.slides = [];
   state.annualPlan = null;
+  state.lessonGeneration = null;
   state.script = "";
   state.questions = [];
   state.materialPages = [];
@@ -6583,6 +6689,7 @@ function setFormInputs(inputs) {
 function persistState() {
   const payload = {
     annualPlan: state.annualPlan,
+    lessonGeneration: state.lessonGeneration,
     slides: state.slides,
     script: state.script,
     questions: state.questions,
@@ -6612,6 +6719,7 @@ function restoreState() {
     if (!raw) return;
     const payload = JSON.parse(raw);
     state.annualPlan = payload.annualPlan || null;
+    state.lessonGeneration = payload.lessonGeneration || null;
     state.slides = payload.slides || [];
     state.script = payload.script || "";
     state.questions = payload.questions || [];
@@ -6635,6 +6743,9 @@ function restoreState() {
     dom.assistantContext.value = payload.assistantContext || buildAssistantContext();
     if (state.materialMeta) {
       setMaterialStatus(`已載入 ${state.materialMeta.filename}：${state.materialPages.length || 1} 個片段`, true);
+    }
+    if (state.lessonGeneration?.slides?.length && dom.compareBox) {
+      dom.compareBox.textContent = `偵測到未完成的教材生成暫存：已完成 ${state.lessonGeneration.slides.length}/${state.lessonGeneration.slideTarget || "?"} 頁。再按「生成教材」會只補未完成頁。`;
     }
   } catch {
     localStorage.removeItem(STORAGE_KEY);
