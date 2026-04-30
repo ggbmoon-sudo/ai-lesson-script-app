@@ -89,6 +89,34 @@ const lessonSchema = {
   },
 };
 
+const lessonQuestionsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["questions"],
+  properties: {
+    questions: {
+      type: "array",
+      minItems: 3,
+      maxItems: 6,
+      items: { type: "string" },
+    },
+  },
+};
+
+const lessonSlidesChunkSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["slides"],
+  properties: {
+    slides: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: lessonSchema.properties.slides.items,
+    },
+  },
+};
+
 const scriptSchema = {
   type: "object",
   additionalProperties: false,
@@ -537,12 +565,7 @@ async function handleAiRequest(req, res, pathname) {
   const body = await readJsonBody(req);
 
   if (pathname === "/api/ai/lesson") {
-    const result = await createStructuredResponse({
-      provider,
-      schemaName: "lesson_plan",
-      schema: lessonSchema,
-      input: buildLessonPrompt(body),
-    });
+    const result = await createLessonResponse(provider, body);
     return sendJson(res, 200, result);
   }
 
@@ -1580,6 +1603,50 @@ function shouldUseChunkedLecturePptxSummary(error) {
   );
 }
 
+async function createLessonResponse(provider, body) {
+  const slideTarget = normalizePositiveInteger(body?.inputs?.slideTarget || body?.inputs?.slide_target || body?.inputs?.pptSlides);
+  if (!slideTarget || slideTarget <= 16) {
+    return createStructuredResponse({
+      provider,
+      schemaName: "lesson_plan",
+      schema: lessonSchema,
+      input: buildLessonPrompt(body),
+    });
+  }
+
+  const ranges = [];
+  for (let start = 1; start <= slideTarget; start += 10) {
+    ranges.push({ startSlide: start, endSlide: Math.min(slideTarget, start + 9) });
+  }
+
+  const questionsPromise = createStructuredResponse({
+    provider,
+    schemaName: "lesson_questions",
+    schema: lessonQuestionsSchema,
+    input: buildLessonQuestionsPrompt(body),
+  });
+
+  const chunkPromises = ranges.map((range) => createStructuredResponse({
+    provider,
+    schemaName: "lesson_slides_chunk",
+    schema: lessonSlidesChunkSchema,
+    input: buildLessonChunkPrompt({
+      ...body,
+      slideTarget,
+      startSlide: range.startSlide,
+      endSlide: range.endSlide,
+    }),
+  }));
+
+  const [questionsResult, ...chunkResults] = await Promise.all([questionsPromise, ...chunkPromises]);
+  const slides = chunkResults.flatMap((chunk) => Array.isArray(chunk?.slides) ? chunk.slides : []);
+
+  return {
+    questions: questionsResult?.questions || [],
+    slides: slides.slice(0, slideTarget),
+  };
+}
+
 async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {
   const endpoint = getOpenAiCompatibleChatEndpoint();
   const maxTokens = getOpenAiCompatibleMaxTokens(schemaName);
@@ -1689,6 +1756,8 @@ function getOpenAiCompatibleMaxTokens(schemaName) {
     classroom_assistant: 1024,
     ai_diagnostics: 256,
     student_grounded_qa: 1024,
+    lesson_questions: 1024,
+    lesson_slides_chunk: 4096,
     slide_revision: 2048,
     lecture_pptx_summary: 4096,
     lecture_pptx_summary_core: 1024,
@@ -1711,6 +1780,8 @@ function getOpenAiCompatibleRetryMaxTokens(schemaName, maxTokens) {
     classroom_assistant: 768,
     ai_diagnostics: 128,
     student_grounded_qa: 768,
+    lesson_questions: 768,
+    lesson_slides_chunk: 4096,
     slide_revision: 1024,
     lecture_pptx_summary: 4096,
     lecture_pptx_summary_core: 768,
@@ -2349,6 +2420,52 @@ ${slideTargetRule}
 4. questions 是 AI 還需要追問教師的關鍵問題；不要重複已經被教師回答的問題。`;
 }
 
+function buildLessonQuestionsPrompt({ inputs }) {
+  return `請只生成 3-6 條教師追問問題，用來補齊 PPT deck 生成前的資訊缺口。
+
+課題：${inputs.topic}
+科目：${inputs.subject}
+對象：${inputs.audience}
+分鐘：${inputs.duration}
+PPT slide target：${inputs.slideTarget || "auto"}
+學習目標：${inputs.objective}
+先備知識與班情：${inputs.context}
+教師已回答：${inputs.interviewAnswers || "尚未提供"}
+
+要求：
+1. 不要生成 slides。
+2. questions 必須集中在先備差距、demo 環境、評核證據、常見錯誤、時間取捨。
+3. 不要重複教師已回答的內容。`;
+}
+
+function buildLessonChunkPrompt({ inputs, slideTarget, startSlide, endSlide }) {
+  const chunkCount = Math.max(1, endSlide - startSlide + 1);
+  return `請生成專業 PPT deck 的其中一段 slides。這是分段 AI 生成，最後會由 server 合併成完整 ${slideTarget} 頁。
+
+課題：${inputs.topic}
+科目：${inputs.subject}
+對象：${inputs.audience}
+分鐘：${inputs.duration}
+PPT slide target：${slideTarget}
+本段 slide range：${startSlide}-${endSlide}
+本段必須輸出 slides 數量：${chunkCount}
+風格：${inputs.style}
+學習目標：${inputs.objective}
+先備知識與班情：${inputs.context}
+教師已回答的 AI 追問：${inputs.interviewAnswers || "尚未提供"}
+Bloom 層次：${(inputs.bloom || []).join(", ")}
+
+分段要求：
+1. slides array 長度必須剛好等於 ${chunkCount}。
+2. 這段只處理第 ${startSlide} 到第 ${endSlide} 頁，不要生成其他頁。
+3. 每頁 title 必須唯一，避免整段使用同一個 exercise/demo 標題。
+4. 每頁都要包含 slideType、event、bloom、minutes、activity、notes、suggestedLayout、suggestedVisual、speakerNotes、factCheckPoints。
+5. notes 是單頁 PPT prompt 的素材摘要，不要直接輸出整段 PPT Slide Compiler Prompt。
+6. 依頁序安排：概念、demo、checkpoint、troubleshooting、lab bridge、assessment、summary/reference；不要每頁都是練習。
+7. 技術命令、產品名、YAML 欄位可保留英文；其餘使用繁體中文。
+8. 若資訊不足，speakerNotes 標示「推定補充」或「需教師確認」。`;
+}
+
 function buildScriptPrompt({ inputs, material, slideJson = [], courseJson = null, teacherInterview = "", scriptPages = [], startPage, minutes, budget, wpm }) {
   const cleanSlideJson = Array.isArray(slideJson) && slideJson.length
     ? slideJson
@@ -2559,6 +2676,8 @@ function getGeminiMaxOutputTokens(schemaName) {
   const caps = {
     classroom_assistant: 1024,
     student_grounded_qa: 1024,
+    lesson_questions: 1024,
+    lesson_slides_chunk: 4096,
     slide_revision: 2048,
     lecture_pptx_summary: 2048,
     lecture_pptx_summary_core: 1024,

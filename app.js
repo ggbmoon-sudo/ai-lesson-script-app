@@ -359,6 +359,7 @@ function bindDom() {
   dom.subject = document.getElementById("subjectInput");
   dom.audience = document.getElementById("audienceInput");
   dom.duration = document.getElementById("durationInput");
+  dom.slideTarget = document.getElementById("slideTargetInput");
   dom.style = document.getElementById("styleInput");
   dom.objective = document.getElementById("objectiveInput");
   dom.context = document.getElementById("contextInput");
@@ -692,11 +693,13 @@ function getLessonInputs() {
     .filter((input) => input.checked)
     .map((input) => input.value);
 
+  const formSlideTarget = Number(dom.slideTarget?.value || 0);
   const inputs = {
     topic: clean(dom.topic.value) || "未命名課題",
     subject: clean(dom.subject.value) || "跨學科",
     audience: clean(dom.audience.value) || "學生",
     duration: clamp(Number(dom.duration.value) || 45, 10, 180),
+    slideTarget: Number.isFinite(formSlideTarget) && formSlideTarget > 0 ? clamp(Math.round(formSlideTarget), 6, 80) : 0,
     style: dom.style.value,
     objective: clean(dom.objective.value),
     context: clean(dom.context.value),
@@ -721,6 +724,7 @@ function inferLessonSlideTarget(inputs, explicitTarget = null) {
     /slide[_\s-]*target["'\s:：]+(\d{1,2})/i,
     /PPT\s*slide\s*target["'\s:：]+(\d{1,2})/i,
     /PPT\s*(?:slides?|頁數|頁)["'\s:：]+(\d{1,2})/i,
+    /LT-CORE-(\d{1,2})/i,
     /(?:^|\D)(\d{1,2})\s*slides\b/i,
   ];
 
@@ -1918,6 +1922,12 @@ async function generateLesson() {
   state.pendingLessonSlideTarget = null;
   state.interviewAnswers = inputs.interviewAnswers || "";
   state.lastLessonInputs = inputs;
+  state.slides = [];
+  state.script = "";
+  state.slideJson = [];
+  dom.materialText.value = "";
+  dom.assistantContext.value = "";
+  renderAll();
   setAiBusy(true, "生成教材中");
   let generated = false;
 
@@ -1946,6 +1956,7 @@ async function generateLesson() {
   }
 
   dom.duration.value = inputs.duration;
+  if (dom.slideTarget) dom.slideTarget.value = inputs.slideTarget || state.slides.length;
   annotateSlidesWithSourceRefs(inputs);
   dom.materialText.value = buildMaterialFromSlides();
   dom.assistantContext.value = buildAssistantContext();
@@ -1961,13 +1972,17 @@ function normalizeAiSlides(slides, inputs) {
   const targetCount = inferLessonSlideTarget(inputs) || slides.length;
   const selectedSlides = slides.slice(0, targetCount);
   const fallbackMinutes = distributeMinutes(inputs.duration, Array.from({ length: targetCount }, () => 1 / Math.max(targetCount, 1)));
+  const seenTitles = new Map();
   const normalized = selectedSlides.map((slide, index) => {
     const fallback = fallbackPlan[index] || fallbackPlan[index % fallbackPlan.length];
     const slideType = clean(slide.slideType || slide.type) || fallback?.slideType || "content";
     const template = pptTemplateCatalog[slideType] || pptTemplateCatalog.content;
     const bloomKey = inferBloomKey(slide.bloom, inputs, template, index);
     const bloom = bloomMap[bloomKey] || bloomMap.understand;
-    const title = clean(slide.title) || fallback?.title || buildPptSlideTitle(slideType, inputs, index);
+    const aiTitle = clean(slide.title);
+    const duplicateCount = aiTitle ? seenTitles.get(aiTitle) || 0 : 0;
+    if (aiTitle) seenTitles.set(aiTitle, duplicateCount + 1);
+    const title = aiTitle && duplicateCount === 0 ? aiTitle : fallback?.title || buildPptSlideTitle(slideType, inputs, index);
     const minutes = Number(slide.minutes) || fallback?.minutes || fallbackMinutes[index] || 5;
     const activity = clean(slide.activity) || buildPptTemplateActivity(slideType, inputs, bloom);
     const suggestedLayout = clean(slide.suggestedLayout) || template.layout;
@@ -1997,7 +2012,8 @@ function normalizeAiSlides(slides, inputs) {
         bloom,
         minutes,
         activity,
-        sourceNotes: clean(slide.notes) || buildPptSlideSourceNotes(slideType, inputs, title, activity),
+        slideNumber: index + 1,
+        sourceNotes: buildPptSlideSourceNotes(slideType, inputs, title, activity, index + 1),
         slideType,
         template,
         suggestedLayout,
@@ -2043,7 +2059,8 @@ function buildSlideFromDeckPlan(plan, inputs, index) {
       bloom,
       minutes: plan.minutes,
       activity,
-      sourceNotes: buildPptSlideSourceNotes(plan.slideType, inputs, title, activity),
+      slideNumber: index + 1,
+      sourceNotes: buildPptSlideSourceNotes(plan.slideType, inputs, title, activity, index + 1),
       slideType: plan.slideType,
       template,
       suggestedLayout: plan.suggestedLayout || template.layout,
@@ -2074,9 +2091,10 @@ function buildPptDeckPlan(inputs) {
   const minutes = distributeMinutes(inputs.duration, normalizeWeights(weights));
   return sequence.map((slideType, index) => {
     const template = pptTemplateCatalog[slideType] || pptTemplateCatalog.content;
+    const repeatedTypeCount = sequence.slice(0, index + 1).filter((type) => type === slideType).length;
     return {
       slideType,
-      title: buildPptSlideTitle(slideType, inputs, index),
+      title: ensureUniqueDeckPlanTitle(buildPptSlideTitle(slideType, inputs, index), slideType, repeatedTypeCount),
       minutes: minutes[index],
       suggestedLayout: template.layout,
       suggestedVisual: template.visual,
@@ -2105,6 +2123,11 @@ function expandPptSequenceToTarget(sequence, slideTarget, examOrTech) {
   }
 
   return [...body, ...tail].slice(0, target);
+}
+
+function ensureUniqueDeckPlanTitle(title, slideType, repeatedTypeCount) {
+  if (repeatedTypeCount <= 1 || ["title", "summary", "references"].includes(slideType)) return title;
+  return `${title} ${repeatedTypeCount}`;
 }
 
 function normalizeWeights(weights) {
@@ -2165,20 +2188,32 @@ function buildPptTemplateActivity(slideType, inputs, bloom) {
   return actions[slideType] || buildActivity(pptTemplateCatalog[slideType]?.event || "呈現內容", inputs, bloom);
 }
 
-function buildPptSlideSourceNotes(slideType, inputs, title, activity) {
+function buildPptSlideSourceNotes(slideType, inputs, title, activity, slideNumber = "") {
   const objectives = splitPlanItems(inputs.objective).slice(0, 4);
+  const slideTarget = inferLessonSlideTarget(inputs);
   return [
     `course_json.title: ${inputs.topic}`,
     `course_json.subject_domain: ${inputs.subject}`,
     `course_json.audience_profile: ${inputs.audience}`,
     `course_json.duration_min: ${inputs.duration}`,
+    `course_json.slide_target: ${slideTarget || "auto"}`,
+    slideNumber ? `slide_no: ${slideNumber}` : "",
     `course_json.style: ${inputs.style}`,
     `course_json.objectives: ${objectives.length ? objectives.join("；") : inputs.objective || "需由教師確認"}`,
-    `course_json.prerequisites: ${inputs.context || "未提供；請在 speaker notes 標示假設"}`,
+    `course_json.prerequisites: ${summarizePptContext(inputs.context) || "未提供；請在 speaker notes 標示假設"}`,
     `course_json.teacher_interview_answers: ${inputs.interviewAnswers || "尚未提供"}`,
     `slide_goal: ${title}`,
     `linked_assessment: ${activity}`,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
+
+function summarizePptContext(context) {
+  return String(context || "")
+    .split(/\r?\n/)
+    .map((line) => clean(line))
+    .filter((line) => line && !/^\s*[{}\[\]",]/.test(line) && !/prompt_hash|model_name|source_snapshot_id|review_status|course_id|course_title|locale|version/i.test(line))
+    .slice(0, 10)
+    .join("；");
 }
 
 function buildPptSpeakerNotes(slideType, inputs, title, activity) {
@@ -3258,7 +3293,8 @@ async function sendAnnualLectureToBuilder(index) {
       `Teaching flow：${unit.recordingCue || ""}`,
       `PPT focus：${(unit.pptFocus || []).join("、")}`,
       `Subtopics：${(unit.subtopics || []).join("、")}`,
-      `Metadata：${JSON.stringify(unit.metadata || {}, null, 2)}`,
+      `Difficulty：${unit.metadata?.difficulty || "intermediate"}`,
+      `Resources：${(unit.metadata?.resource_profile || []).join("、")}`,
       `QA checklist：${(unit.qaChecklist || []).join("；")}`,
       `Duplicate cleanup：${unit.duplicateCleanup}`,
       unit.aiFeedback ? `Teacher feedback：${unit.aiFeedback}` : "",
@@ -5899,6 +5935,7 @@ function buildPptSlidePrompt({
   bloom,
   minutes,
   activity,
+  slideNumber = "",
   sourceNotes,
   slideType = "content",
   template = pptTemplateCatalog.content,
@@ -5917,7 +5954,7 @@ function buildPptSlidePrompt({
 ${JSON.stringify(courseJson, null, 2)}
 
 【本頁設定】
-- slide_no: auto
+- slide_no: ${slideNumber || "auto"}
 - slide_type: ${slideType} / ${template.label || "內容講解"}
 - slide_goal: ${title}
 - teaching_event: ${event}
@@ -5958,14 +5995,16 @@ ${factCheckPoints.map((item) => `- ${item}`).join("\n")}`;
 }
 
 function buildCourseJsonForPpt(inputs) {
+  const slideTarget = inferLessonSlideTarget(inputs);
   return {
     title: inputs.topic,
     subject_domain: inputs.subject,
     audience_profile: inputs.audience,
     duration_min: inputs.duration,
+    slide_target: slideTarget || "",
     style: inputs.style,
     objectives: splitPlanItems(inputs.objective).slice(0, 6),
-    prerequisites: splitPlanItems(inputs.context).slice(0, 8),
+    prerequisites: splitPlanItems(summarizePptContext(inputs.context)).slice(0, 8),
     bloom_levels: inputs.bloom || [],
     teacher_interview_answers: inputs.interviewAnswers || "",
     source_completeness: inputs.context ? "provided" : "partial_or_missing",
@@ -6400,6 +6439,7 @@ function setFormInputs(inputs) {
   dom.subject.value = inputs.subject || "";
   dom.audience.value = inputs.audience || "";
   dom.duration.value = inputs.duration || 45;
+  if (dom.slideTarget) dom.slideTarget.value = inputs.slideTarget || inferLessonSlideTarget(inputs) || buildPptDeckPlan(inputs).length;
   dom.style.value = inputs.style || "清晰嚴謹";
   dom.objective.value = inputs.objective || "";
   dom.context.value = inputs.context || "";
