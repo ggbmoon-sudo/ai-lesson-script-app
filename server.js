@@ -543,6 +543,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.requestTimeout = 15 * 60 * 1000;
+server.headersTimeout = 16 * 60 * 1000;
+server.keepAliveTimeout = 65 * 1000;
+
 server.listen(PORT, HOST, () => {
   const provider = resolveAiProvider();
   const mode = provider ? `AI enabled (${provider.name}: ${provider.model})` : "AI provider required but not configured";
@@ -566,6 +570,27 @@ async function handleAiRequest(req, res, pathname) {
 
   if (pathname === "/api/ai/lesson") {
     const result = await createLessonResponse(provider, body);
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lesson-questions") {
+    const result = await createStructuredResponse({
+      provider,
+      schemaName: "lesson_questions",
+      schema: lessonQuestionsSchema,
+      input: buildLessonQuestionsPrompt(body),
+    });
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/ai/lesson-slides-chunk") {
+    const slideTarget = normalizePositiveInteger(body?.slideTarget || body?.inputs?.slideTarget || body?.inputs?.slide_target || body?.inputs?.pptSlides);
+    const startSlide = normalizePositiveInteger(body?.startSlide);
+    const endSlide = normalizePositiveInteger(body?.endSlide);
+    if (!slideTarget || !startSlide || !endSlide || startSlide > endSlide || endSlide > slideTarget) {
+      return sendJson(res, 400, { error: "Invalid lesson slide chunk range." });
+    }
+    const result = await createLessonSlidesChunk(provider, body, slideTarget, { startSlide, endSlide });
     return sendJson(res, 200, result);
   }
 
@@ -1615,7 +1640,7 @@ async function createLessonResponse(provider, body) {
   }
 
   const ranges = [];
-  const chunkSize = 5;
+  const chunkSize = 3;
   for (let start = 1; start <= slideTarget; start += chunkSize) {
     ranges.push({ startSlide: start, endSlide: Math.min(slideTarget, start + chunkSize - 1) });
   }
@@ -1647,6 +1672,9 @@ async function createLessonResponse(provider, body) {
 
   if (!slides.length) {
     throw new Error(`AI lesson slide generation failed for ${slideTarget} slides. ${warnings.join(" | ")}`);
+  }
+  if (slides.length < slideTarget) {
+    throw new Error(`AI lesson slide generation returned ${slides.length}/${slideTarget} slides. ${warnings.join(" | ")}`);
   }
 
   return {
@@ -2480,22 +2508,27 @@ PPT slide target：${inputs.slideTarget || "auto"}
 3. 不要重複教師已回答的內容。`;
 }
 
-function buildLessonChunkPrompt({ inputs, slideTarget, startSlide, endSlide }) {
+function buildLessonChunkPrompt({ inputs, slideTarget, startSlide, endSlide, blueprints = [] }) {
+  const compactInputs = compactLessonPromptInputs(inputs);
   const chunkCount = Math.max(1, endSlide - startSlide + 1);
+  const blueprintText = formatLessonBlueprintsForPrompt(blueprints, startSlide, endSlide);
   return `請生成專業 PPT deck 的其中一段 slides。這是分段 AI 生成，最後會由 server 合併成完整 ${slideTarget} 頁。
 
-課題：${inputs.topic}
-科目：${inputs.subject}
-對象：${inputs.audience}
-分鐘：${inputs.duration}
+課題：${compactInputs.topic}
+科目：${compactInputs.subject}
+對象：${compactInputs.audience}
+分鐘：${compactInputs.duration}
 PPT slide target：${slideTarget}
 本段 slide range：${startSlide}-${endSlide}
 本段必須輸出 slides 數量：${chunkCount}
-風格：${inputs.style}
-學習目標：${inputs.objective}
-先備知識與班情：${inputs.context}
-教師已回答的 AI 追問：${inputs.interviewAnswers || "尚未提供"}
-Bloom 層次：${(inputs.bloom || []).join(", ")}
+風格：${compactInputs.style}
+學習目標：${compactInputs.objective}
+先備知識與班情：${compactInputs.context}
+教師已回答的 AI 追問：${compactInputs.interviewAnswers || "尚未提供"}
+Bloom 層次：${compactInputs.bloom.join(", ")}
+
+本段 blueprint（必須逐項對齊，不要自行改成同一種頁型）：
+${blueprintText}
 
 分段要求：
 1. slides array 長度必須剛好等於 ${chunkCount}。
@@ -2505,7 +2538,57 @@ Bloom 層次：${(inputs.bloom || []).join(", ")}
 5. notes 是單頁 PPT prompt 的素材摘要，不要直接輸出整段 PPT Slide Compiler Prompt。
 6. 依頁序安排：概念、demo、checkpoint、troubleshooting、lab bridge、assessment、summary/reference；不要每頁都是練習。
 7. 技術命令、產品名、YAML 欄位可保留英文；其餘使用繁體中文。
-8. 若資訊不足，speakerNotes 標示「推定補充」或「需教師確認」。`;
+8. 若資訊不足，speakerNotes 標示「推定補充」或「需教師確認」。
+9. activity、notes、speakerNotes 必須根據本課題具體化，不要輸出空泛模板。`;
+}
+
+function compactLessonPromptInputs(inputs = {}) {
+  return {
+    topic: limitText(inputs.topic, 120),
+    subject: limitText(inputs.subject, 160),
+    audience: limitText(inputs.audience, 160),
+    duration: normalizePositiveInteger(inputs.duration) || inputs.duration || "",
+    style: limitText(inputs.style, 80),
+    objective: limitLessonPromptText(inputs.objective, 1600),
+    context: limitLessonPromptText(inputs.context, 1800),
+    interviewAnswers: limitLessonPromptText(inputs.interviewAnswers, 1000),
+    bloom: Array.isArray(inputs.bloom) ? inputs.bloom.map((item) => limitText(item, 40)).filter(Boolean).slice(0, 6) : [],
+  };
+}
+
+function limitLessonPromptText(value, maxLength) {
+  const cleaned = String(value || "")
+    .split(/\r?\n/)
+    .filter((line) => !/PPT Slide Compiler Prompt|course_json|slide_json|slide_no|slide_body|speaker_notes|presenter_cues|layout_preference|visual_preference|fact_check_points|prompt_hash|model_name|輸出格式|硬性限制|本頁設定/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return limitText(cleaned, maxLength);
+}
+
+function formatLessonBlueprintsForPrompt(blueprints, startSlide, endSlide) {
+  const items = Array.isArray(blueprints) ? blueprints : [];
+  const scoped = items
+    .filter((item) => {
+      const number = normalizePositiveInteger(item?.slideNo || item?.number);
+      return number >= startSlide && number <= endSlide;
+    })
+    .slice(0, Math.max(1, endSlide - startSlide + 1));
+
+  if (!scoped.length) {
+    return `請自行為第 ${startSlide}-${endSlide} 頁安排互不重複的 page purpose。`;
+  }
+
+  return scoped.map((item) => {
+    const number = normalizePositiveInteger(item.slideNo || item.number) || "";
+    return [
+      `- slide ${number}`,
+      `type=${limitText(item.slideType || item.type, 40) || "content"}`,
+      `titleHint=${limitText(item.titleHint || item.title, 120)}`,
+      `purpose=${limitText(item.purpose || item.activity, 180)}`,
+      `minutes=${normalizePositiveInteger(item.minutes) || ""}`,
+    ].join(" | ");
+  }).join("\n");
 }
 
 function buildScriptPrompt({ inputs, material, slideJson = [], courseJson = null, teacherInterview = "", scriptPages = [], startPage, minutes, budget, wpm }) {

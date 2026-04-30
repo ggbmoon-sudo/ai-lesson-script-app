@@ -994,6 +994,8 @@ function getAiRetryCount(type) {
   const heavyAiJobs = new Set([
     "annual-plan",
     "lesson",
+    "lesson-questions",
+    "lesson-slides-chunk",
     "script",
     "script-revision",
     "assessment-bank",
@@ -1922,24 +1924,25 @@ async function generateLesson() {
   state.pendingLessonSlideTarget = null;
   state.interviewAnswers = inputs.interviewAnswers || "";
   state.lastLessonInputs = inputs;
-  state.slides = [];
-  state.script = "";
-  state.slideJson = [];
-  dom.materialText.value = "";
-  dom.assistantContext.value = "";
-  renderAll();
+  const previousHadSlides = Array.isArray(state.slides) && state.slides.length > 0;
   setAiBusy(true, "生成教材中");
   let generated = false;
   let generationError = "";
 
   try {
-    const aiLesson = await requestAi("lesson", { inputs });
+    const aiLesson = await generateLessonAiPayload(inputs);
     if (aiLesson?.slides?.length) {
+      const expectedSlides = inferLessonSlideTarget(inputs);
+      if (expectedSlides && aiLesson.slides.length < expectedSlides) {
+        throw new Error(`AI 只返回 ${aiLesson.slides.length}/${expectedSlides} 頁，已停止覆蓋舊教材。`);
+      }
       state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
+      state.script = "";
+      state.slideJson = [];
       logAudit("教材生成", `${formatAiProviderName(state.ai.provider)} 生成 ${state.slides.length} 頁教材草稿`);
       if (Array.isArray(aiLesson.generationWarnings) && aiLesson.generationWarnings.length) {
-        const warningText = `AI 已生成 ${state.slides.length} 頁，但部分分段曾重試：${aiLesson.generationWarnings.slice(0, 3).join("；")}`;
+        const warningText = `AI 已生成 ${state.slides.length} 頁，但有分段重試：${aiLesson.generationWarnings.slice(0, 3).join("；")}`;
         if (dom.compareBox) dom.compareBox.textContent = warningText;
         logAudit("教材生成", warningText);
       }
@@ -1950,7 +1953,9 @@ async function generateLesson() {
   } catch (error) {
     console.warn(error);
     generationError = `AI 教材生成失敗：${error.message}`;
-    if (dom.compareBox) dom.compareBox.textContent = generationError;
+    if (dom.compareBox) dom.compareBox.textContent = previousHadSlides
+      ? `${generationError}\n已保留畫面上的舊教材，請重試或縮小頁數。`
+      : generationError;
     logAudit("教材生成", generationError);
   } finally {
     setAiBusy(false);
@@ -1958,7 +1963,7 @@ async function generateLesson() {
 
   if (!generated) {
     renderAll();
-    if (dom.slideGrid) dom.slideGrid.innerHTML = emptyText(`${generationError || "AI 教材生成失敗，沒有產生 slides。"} 請檢查 /api/ai/diagnostics?live=1 或稍後重試。`);
+    if (!previousHadSlides && dom.slideGrid) dom.slideGrid.innerHTML = emptyText(`${generationError || "AI 教材生成失敗，沒有產生 slides。"} 請檢查 /api/ai/diagnostics?live=1 或稍後重試。`);
     renderStatus();
     persistState();
     return false;
@@ -1974,6 +1979,122 @@ async function generateLesson() {
   markDriveBackupNeeded("教材生成");
   persistState();
   return true;
+}
+
+async function generateLessonAiPayload(inputs) {
+  const slideTarget = inferLessonSlideTarget(inputs);
+  const aiInputs = compactLessonAiInputs(inputs);
+  if (slideTarget > 16) {
+    return generateLessonByClientChunks(inputs, aiInputs, slideTarget);
+  }
+  return requestAi("lesson", { inputs: aiInputs });
+}
+
+async function generateLessonByClientChunks(originalInputs, aiInputs, slideTarget) {
+  const ranges = getLectureChecklistRanges(slideTarget, 3);
+  const questions = await requestLessonQuestions(aiInputs);
+  const warnings = [];
+  const slides = [];
+
+  for (const range of ranges) {
+    setAiBusy(true, `生成教材 ${range.startSlide}-${range.endSlide}/${slideTarget}`);
+    try {
+      const chunkSlides = await requestLessonSlideRange(originalInputs, aiInputs, slideTarget, range);
+      slides.push(...chunkSlides);
+    } catch (error) {
+      warnings.push(`slides ${range.startSlide}-${range.endSlide}: ${error.message || "failed"}`);
+      const recovered = await requestLessonSlidesOneByOne(originalInputs, aiInputs, slideTarget, range, warnings);
+      slides.push(...recovered);
+    }
+  }
+
+  if (slides.length < slideTarget) {
+    throw new Error(`AI 只完成 ${slides.length}/${slideTarget} 頁；已停止覆蓋舊教材。`);
+  }
+
+  return {
+    questions,
+    slides: slides.slice(0, slideTarget),
+    generationWarnings: warnings,
+  };
+}
+
+async function requestLessonQuestions(aiInputs) {
+  try {
+    const result = await requestAi("lesson-questions", { inputs: aiInputs });
+    return Array.isArray(result?.questions) ? result.questions : [];
+  } catch (error) {
+    console.warn("Lesson questions generation failed", error);
+    return [];
+  }
+}
+
+async function requestLessonSlideRange(originalInputs, aiInputs, slideTarget, range) {
+  const expected = range.endSlide - range.startSlide + 1;
+  const blueprints = buildLessonChunkBlueprints(originalInputs, range);
+  const result = await requestAi("lesson-slides-chunk", {
+    inputs: { ...aiInputs, slideTarget },
+    slideTarget,
+    startSlide: range.startSlide,
+    endSlide: range.endSlide,
+    blueprints,
+  });
+  const slides = Array.isArray(result?.slides) ? result.slides.slice(0, expected) : [];
+  if (slides.length < expected) {
+    throw new Error(`AI 只返回 ${slides.length}/${expected} 頁`);
+  }
+  return slides;
+}
+
+async function requestLessonSlidesOneByOne(originalInputs, aiInputs, slideTarget, range, warnings) {
+  const slides = [];
+  for (let slideNo = range.startSlide; slideNo <= range.endSlide; slideNo += 1) {
+    setAiBusy(true, `補回教材第 ${slideNo}/${slideTarget} 頁`);
+    try {
+      const recovered = await requestLessonSlideRange(originalInputs, aiInputs, slideTarget, { startSlide: slideNo, endSlide: slideNo });
+      slides.push(...recovered.slice(0, 1));
+    } catch (error) {
+      warnings.push(`slide ${slideNo}: ${error.message || "failed"}`);
+    }
+  }
+  return slides;
+}
+
+function buildLessonChunkBlueprints(inputs, range) {
+  const deckPlan = buildPptDeckPlan(inputs);
+  return deckPlan.slice(range.startSlide - 1, range.endSlide).map((plan, offset) => ({
+    slideNo: range.startSlide + offset,
+    slideType: plan.slideType || "content",
+    titleHint: plan.title || "",
+    purpose: plan.activity || plan.suggestedLayout || "",
+    minutes: plan.minutes || "",
+  }));
+}
+
+function compactLessonAiInputs(inputs) {
+  return {
+    topic: clean(inputs.topic).slice(0, 140),
+    subject: clean(inputs.subject).slice(0, 180),
+    audience: clean(inputs.audience).slice(0, 180),
+    duration: inputs.duration,
+    slideTarget: inputs.slideTarget,
+    style: clean(inputs.style).slice(0, 80),
+    objective: stripPromptNoise(inputs.objective, 1800),
+    context: stripPromptNoise(inputs.context, 1800),
+    interviewAnswers: stripPromptNoise(inputs.interviewAnswers, 1200),
+    bloom: Array.isArray(inputs.bloom) ? inputs.bloom.slice(0, 6) : [],
+  };
+}
+
+function stripPromptNoise(value, maxLength = 1600) {
+  const noisyLine = /PPT Slide Compiler Prompt|course_json|slide_json|slide_no|slide_body|speaker_notes|presenter_cues|layout_preference|visual_preference|fact_check_points|prompt_hash|model_name|輸出格式|硬性限制|本頁設定/i;
+  const text = String(value || "")
+    .split(/\r?\n/)
+    .filter((line) => !noisyLine.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
 }
 
 function normalizeAiSlides(slides, inputs) {
