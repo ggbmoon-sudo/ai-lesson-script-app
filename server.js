@@ -1615,18 +1615,49 @@ async function createLessonResponse(provider, body) {
   }
 
   const ranges = [];
-  for (let start = 1; start <= slideTarget; start += 10) {
-    ranges.push({ startSlide: start, endSlide: Math.min(slideTarget, start + 9) });
+  const chunkSize = 5;
+  for (let start = 1; start <= slideTarget; start += chunkSize) {
+    ranges.push({ startSlide: start, endSlide: Math.min(slideTarget, start + chunkSize - 1) });
   }
 
-  const questionsPromise = createStructuredResponse({
-    provider,
-    schemaName: "lesson_questions",
-    schema: lessonQuestionsSchema,
-    input: buildLessonQuestionsPrompt(body),
-  });
+  let questionsResult = { questions: [] };
+  try {
+    questionsResult = await createStructuredResponse({
+      provider,
+      schemaName: "lesson_questions",
+      schema: lessonQuestionsSchema,
+      input: buildLessonQuestionsPrompt(body),
+    });
+  } catch {
+    questionsResult = { questions: [] };
+  }
 
-  const chunkPromises = ranges.map((range) => createStructuredResponse({
+  const slides = [];
+  const warnings = [];
+  for (const range of ranges) {
+    try {
+      const chunk = await createLessonSlidesChunk(provider, body, slideTarget, range);
+      slides.push(...normalizeLessonChunkSlides(chunk?.slides, range));
+    } catch (error) {
+      warnings.push(`slides ${range.startSlide}-${range.endSlide}: ${sanitizeDiagnosticValue(error.message || "failed")}`);
+      const recoveredSlides = await createLessonSlidesOneByOne(provider, body, slideTarget, range, warnings);
+      slides.push(...recoveredSlides);
+    }
+  }
+
+  if (!slides.length) {
+    throw new Error(`AI lesson slide generation failed for ${slideTarget} slides. ${warnings.join(" | ")}`);
+  }
+
+  return {
+    questions: questionsResult?.questions || [],
+    slides: slides.slice(0, slideTarget),
+    generationWarnings: warnings,
+  };
+}
+
+function createLessonSlidesChunk(provider, body, slideTarget, range) {
+  return createStructuredResponse({
     provider,
     schemaName: "lesson_slides_chunk",
     schema: lessonSlidesChunkSchema,
@@ -1636,15 +1667,26 @@ async function createLessonResponse(provider, body) {
       startSlide: range.startSlide,
       endSlide: range.endSlide,
     }),
-  }));
+  });
+}
 
-  const [questionsResult, ...chunkResults] = await Promise.all([questionsPromise, ...chunkPromises]);
-  const slides = chunkResults.flatMap((chunk) => Array.isArray(chunk?.slides) ? chunk.slides : []);
+async function createLessonSlidesOneByOne(provider, body, slideTarget, range, warnings) {
+  const slides = [];
+  for (let slideNo = range.startSlide; slideNo <= range.endSlide; slideNo += 1) {
+    try {
+      const chunk = await createLessonSlidesChunk(provider, body, slideTarget, { startSlide: slideNo, endSlide: slideNo });
+      slides.push(...normalizeLessonChunkSlides(chunk?.slides, { startSlide: slideNo, endSlide: slideNo }).slice(0, 1));
+    } catch (error) {
+      warnings.push(`slide ${slideNo}: ${sanitizeDiagnosticValue(error.message || "failed")}`);
+    }
+  }
+  return slides;
+}
 
-  return {
-    questions: questionsResult?.questions || [],
-    slides: slides.slice(0, slideTarget),
-  };
+function normalizeLessonChunkSlides(slides, range) {
+  if (!Array.isArray(slides)) return [];
+  const expected = Math.max(1, range.endSlide - range.startSlide + 1);
+  return slides.slice(0, expected);
 }
 
 async function createOpenAiCompatibleStructuredResponse({ schemaName, schema, input }) {

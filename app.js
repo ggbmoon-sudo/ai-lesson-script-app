@@ -1930,6 +1930,7 @@ async function generateLesson() {
   renderAll();
   setAiBusy(true, "生成教材中");
   let generated = false;
+  let generationError = "";
 
   try {
     const aiLesson = await requestAi("lesson", { inputs });
@@ -1937,19 +1938,27 @@ async function generateLesson() {
       state.questions = Array.isArray(aiLesson.questions) ? aiLesson.questions : [];
       state.slides = normalizeAiSlides(aiLesson.slides, inputs);
       logAudit("教材生成", `${formatAiProviderName(state.ai.provider)} 生成 ${state.slides.length} 頁教材草稿`);
+      if (Array.isArray(aiLesson.generationWarnings) && aiLesson.generationWarnings.length) {
+        const warningText = `AI 已生成 ${state.slides.length} 頁，但部分分段曾重試：${aiLesson.generationWarnings.slice(0, 3).join("；")}`;
+        if (dom.compareBox) dom.compareBox.textContent = warningText;
+        logAudit("教材生成", warningText);
+      }
       generated = true;
     } else {
       throw new Error("AI 未回傳有效 slides。");
     }
   } catch (error) {
     console.warn(error);
-    if (dom.compareBox) dom.compareBox.textContent = `AI 教材生成失敗：${error.message}`;
-    logAudit("教材生成", `AI 生成失敗：${error.message}`);
+    generationError = `AI 教材生成失敗：${error.message}`;
+    if (dom.compareBox) dom.compareBox.textContent = generationError;
+    logAudit("教材生成", generationError);
   } finally {
     setAiBusy(false);
   }
 
   if (!generated) {
+    renderAll();
+    if (dom.slideGrid) dom.slideGrid.innerHTML = emptyText(`${generationError || "AI 教材生成失敗，沒有產生 slides。"} 請檢查 /api/ai/diagnostics?live=1 或稍後重試。`);
     renderStatus();
     persistState();
     return false;
